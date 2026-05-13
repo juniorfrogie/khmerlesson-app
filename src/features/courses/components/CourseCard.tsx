@@ -1,11 +1,10 @@
-import React from 'react';
 import { View, StyleSheet, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
-import { Colors, Spacing, Radius, Shadow } from '@/src/shared/theme';
+import { Ionicons } from '@expo/vector-icons';
+import { Colors, Spacing, Radius, Shadow, FontSize, FontWeight } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
-import { Badge } from '@/src/shared/components/Badge';
 import type { Course } from '../types';
-import { getImageUrl } from "@/src/shared/utils/image";
+import { getImageUrl } from '@/src/shared/utils/image';
 
 interface CourseCardProps {
   course: Course;
@@ -13,24 +12,67 @@ interface CourseCardProps {
 }
 
 export function CourseCard({ course, onPress }: CourseCardProps) {
+  const isLocked = !course.isFree && !course.hasPurchased;
+
   return (
-    <TouchableOpacity style={styles.card} onPress={() => onPress(course)} activeOpacity={0.9}>
-      <View style={styles.row}>
+    <TouchableOpacity
+      style={[styles.card, isLocked && styles.cardLocked]}
+      onPress={() => onPress(course)}
+      activeOpacity={isLocked ? 1 : 0.88}
+      disabled={isLocked}
+    >
+      {/* Portrait thumbnail */}
+      <View style={styles.thumbnailWrap}>
         <Image
-          source={course.thumbnailUrl ?? require('@/assets/images/book-cover.png')}
-          style={styles.thumbnail}
+          source={
+            course.thumbnailUrl
+              ? getImageUrl(course.thumbnailUrl)
+              : require('@/assets/images/book-cover.png')
+          }
+          style={[styles.thumbnail, isLocked && styles.thumbnailLocked]}
           contentFit="cover"
         />
-        <View style={styles.content}>
-          <View style={styles.badgeRow}>
-            <Badge variant={course.isFree ? 'free' : 'premium'} />
+        {/* price / lock badge */}
+        {isLocked && (
+          <View style={styles.badgeOverlay}>
+            <Ionicons name="lock-closed" size={11} color={Colors.info} />
+            {course.price != null && (
+              <Text style={styles.price}>{course.price}</Text>
+            )}
           </View>
-          <Text variant="subtitle" numberOfLines={1}>{course.title}</Text>
-          <Text variant="caption" color={Colors.text.secondary} numberOfLines={2}>
+        )}
+      </View>
+
+      {/* Content */}
+      <View style={styles.content}>
+        <View style={styles.topGroup}>
+          {/* Title */}
+          <Text
+            variant="subtitle"
+            numberOfLines={2}
+            style={styles.title}
+            color={isLocked ? Colors.text.muted : Colors.text.primary}
+          >
+            {course.title}
+          </Text>
+
+          {/* Description */}
+          <Text variant="caption" color={Colors.text.muted} numberOfLines={2} style={styles.description}>
             {course.description}
           </Text>
+
+          {/* Lesson count below description */}
           {course.lessonCount != null && (
-            <Text variant="label" color={Colors.text.muted}>{course.lessonCount} lessons</Text>
+            <View style={[styles.metaRow, styles.lessonsRow]}>
+              <Ionicons
+                name="book-outline"
+                size={12}
+                color={isLocked ? Colors.text.muted : Colors.text.secondary}
+              />
+              <Text variant="label" color={isLocked ? Colors.text.muted : Colors.text.secondary}>
+                {course.lessonCount} lessons
+              </Text>
+            </View>
           )}
         </View>
       </View>
@@ -40,6 +82,8 @@ export function CourseCard({ course, onPress }: CourseCardProps) {
 
 const styles = StyleSheet.create({
   card: {
+    flexDirection: 'row',
+    height: 150,
     backgroundColor: Colors.background,
     borderRadius: Radius.lg,
     overflow: 'hidden',
@@ -47,18 +91,71 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     ...Shadow.md,
   },
-  row: {
-    flexDirection: 'row',
+  cardLocked: {
+    backgroundColor: Colors.surface,
+    borderColor: Colors.borderLight,
+    opacity: 0.90,
+  },
+  thumbnailWrap: {
+    width: 110,
+    height: 150,
   },
   thumbnail: {
-    width: '30%',
+    width: 110,
+    height: 150,
+  },
+  thumbnailLocked: {
+    opacity: 0.76,
+  },
+  badgeOverlay: {
+    position: 'absolute',
+    top: Spacing.xs,
+    left: Spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#fff',
+    paddingHorizontal: 8,
+    paddingVertical: 1,
+    borderRadius: Radius.full,
   },
   content: {
     flex: 1,
     padding: Spacing.md,
-    gap: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    justifyContent: 'space-between',
   },
-  badgeRow: {
+  topGroup: {
+    gap: Spacing.xs,
+  },
+  title: {
+    lineHeight: 26,
+  },
+  description: {
+    marginTop: 2,
+  },
+  lessonsRow: {
+    marginTop: 2,
+  },
+  metaRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  priceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  price: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    // color: '#fff',
+    color: Colors.info,
+  },
+  purchasedText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.success,
   },
 });

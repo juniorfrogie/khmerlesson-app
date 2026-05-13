@@ -70,7 +70,7 @@ export default function MeScreen() {
             }
 
             try {
-              await apiDelete(`/ api / users / ${currentUser.id}`, accessToken);
+              await apiDelete(`/api/users/${currentUser.id}`, accessToken);
               await doSignOut();
               router.replace('/auth/login');
             } catch (e: unknown) {

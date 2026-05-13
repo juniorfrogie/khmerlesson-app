@@ -4,5 +4,7 @@ export interface Course {
   description: string;
   thumbnailUrl: string;
   isFree: boolean;
+  price?: number;
+  hasPurchased?: boolean;
   lessonCount?: number;
 }
