@@ -71,8 +71,11 @@ export async function apiPostForm<T>(
   });
 
   if (!res.ok) {
-    const json = await res.json().catch(() => ({}));
-    throw new Error(json?.message ?? `API ${res.status}: ${path}`);
+    const text = await res.text().catch(() => '');
+    console.log(`[apiPostForm] ${res.status} ${path} — body: ${text}`);
+    let json: Record<string, unknown> = {};
+    try { json = JSON.parse(text); } catch { /* ignore */ }
+    throw new Error((json?.message as string) ?? `API ${res.status}: ${path}`);
   }
 
   const json = await res.json();

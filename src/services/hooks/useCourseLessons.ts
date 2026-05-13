@@ -12,7 +12,7 @@ export function useCourseLessons(courseId: number | null) {
   const [state, setState] = useState<State>({ lessons: [], loading: true, error: null });
 
   useEffect(() => {
-    if (courseId === null) return;
+    if (courseId === null || isNaN(courseId)) return;
     setState(s => ({ ...s, loading: true, error: null }));
     apiFetch<Lesson[]>(`/api/v1/main-lessons/${courseId}/lessons`)
       .then(lessons => setState({ lessons, loading: false, error: null }))

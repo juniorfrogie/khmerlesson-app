@@ -23,8 +23,8 @@ export default function ExploreScreen() {
 
   const filtered =
     activeFilter === 'all' ? courses :
-    activeFilter === 'free' ? courses.filter(c => c.free) :
-    courses.filter(c => !c.free);
+      activeFilter === 'free' ? courses.filter(c => c.isFree) :
+        courses.filter(c => !c.isFree);
 
   const handleCoursePress = (course: Course) => {
     router.push(`/course/${course.id}`);

@@ -19,6 +19,7 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding" options={{ headerShown: false }} />
         <Stack.Screen name="auth/login" options={{ headerShown: false }} />
         <Stack.Screen name="course/[id]" />
+        <Stack.Screen name="course/purchase" options={{ presentation: 'modal' }} />
         <Stack.Screen name="lesson/[id]" />
       </Stack>
       <StatusBar style="dark" />

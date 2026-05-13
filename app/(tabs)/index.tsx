@@ -1,6 +1,7 @@
 import { ScrollView, View, StyleSheet, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useCallback, useRef } from 'react';
 import { Colors, Spacing } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { CourseCard } from '@/src/features/courses/components/CourseCard';
@@ -9,7 +10,18 @@ import type { Course } from '@/src/features/courses/types';
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { courses, loading, error } = useCourses();
+  const { courses, loading, error, refetch } = useCourses();
+  const isFirstFocus = useRef(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (isFirstFocus.current) {
+        isFirstFocus.current = false;
+        return;
+      }
+      refetch();
+    }, [refetch]),
+  );
 
   const handleCoursePress = (course: Course) => {
     router.push(`/course/${course.id}`);

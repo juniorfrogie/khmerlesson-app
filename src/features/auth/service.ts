@@ -9,6 +9,9 @@ interface AuthResponse {
   refreshToken: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type VerifyAppleResponse = any;
+
 interface GoogleProfile {
   email: string;
   given_name?: string;
@@ -19,17 +22,15 @@ interface GoogleProfile {
 export async function signInWithGoogle(
   accessToken: string,
 ): Promise<{ user: User; tokens: AuthTokens }> {
-  // Fetch Google profile with the OAuth access token
   const profileRes = await fetch('https://www.googleapis.com/userinfo/v2/me', {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!profileRes.ok) throw new Error('Failed to fetch Google profile.');
   const profile: GoogleProfile = await profileRes.json();
 
-  // register-auth-service handles both new and returning social-auth users
   const body: Record<string, string> = {
     email: profile.email,
-    registrationType: 'google',
+    registrationType: 'google_service',
   };
   if (profile.given_name) body.firstName = profile.given_name;
   if (profile.family_name) body.lastName = profile.family_name;
@@ -57,18 +58,46 @@ export async function signInWithApple(): Promise<{ user: User; tokens: AuthToken
     throw new Error('Apple did not return an identity token.');
   }
 
-  // Build form body — field is "idToken" per Flutter reference
-  const body: Record<string, string> = {
+  // Step 1: verify identity token → backend decodes it and returns user info including email
+  const verifyBody: Record<string, string> = {
     idToken: credential.identityToken,
   };
-
   const givenName = credential.fullName?.givenName;
   const familyName = credential.fullName?.familyName;
-  if (givenName) body.firstName = givenName;
-  if (familyName) body.lastName = familyName;
-  if (credential.email) body.email = credential.email;
+  if (credential.email) verifyBody.email = credential.email;
+  if (givenName) verifyBody.firstName = givenName;
+  if (familyName) verifyBody.lastName = familyName;
 
-  const response = await apiPostForm<AuthResponse>('/api/auth/verify-apple-id-token', body);
+  const verifyResponse = await apiPostForm<VerifyAppleResponse>(
+    '/api/auth/verify-apple-id-token',
+    verifyBody,
+  );
+
+  console.log('[Apple] verify response:', JSON.stringify(verifyResponse));
+
+  const email =
+    verifyResponse?.email ??
+    verifyResponse?.user?.email ??
+    credential.email;
+
+  if (!email) throw new Error('Could not determine email from Apple sign-in.');
+
+  // Apple only returns fullName on the very first sign-in.
+  // Use || (not ??) so empty strings fall through to the next fallback.
+  const firstName =
+    givenName || verifyResponse?.user?.firstName || email.split('@')[0];
+  const lastName =
+    familyName || verifyResponse?.user?.lastName || 'User';
+
+  // Step 2: register / login via auth service
+  const body: Record<string, string> = {
+    email,
+    registrationType: 'apple_service',
+    firstName,
+    lastName,
+  };
+
+  const response = await apiPostForm<AuthResponse>('/api/auth/register-auth-service', body);
 
   return {
     user: { ...response.user, provider: 'apple' },

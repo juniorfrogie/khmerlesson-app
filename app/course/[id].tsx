@@ -1,8 +1,11 @@
 import { ScrollView, View, StyleSheet, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
+import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
+import { useState, useCallback } from 'react';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, Radius } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
+import { Button } from '@/src/shared/components/Button';
 import { Badge } from '@/src/shared/components/Badge';
 import { LessonRow } from '@/src/features/lessons/components/LessonRow';
 import { useCourseLessons } from '@/src/services/hooks/useCourseLessons';
@@ -10,17 +13,46 @@ import { useCourses } from '@/src/services/hooks/useCourses';
 import type { Lesson } from '@/src/features/lessons/types';
 
 export default function CourseScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, purchased } = useLocalSearchParams<{ id: string; purchased?: string }>();
   const router = useRouter();
-  const courseId = id ? Number(id) : null;
+  const courseId = id && !isNaN(Number(id)) ? Number(id) : null;
 
-  const { courses } = useCourses();
+  const { courses, refetch } = useCourses();
   const { lessons, loading, error } = useCourseLessons(courseId);
 
-  const course = courses.find(c => c.id === courseId);
+  const [purchasedLocally, setPurchasedLocally] = useState(purchased === '1');
+
+  useFocusEffect(
+    useCallback(() => {
+      if (purchased === '1') {
+        setPurchasedLocally(true);
+        refetch();
+      }
+    }, [purchased, refetch]),
+  );
+
+  const baseCourse = courses.find(c => c.id === courseId);
+  const course = baseCourse
+    ? { ...baseCourse, hasPurchased: baseCourse.hasPurchased || purchasedLocally }
+    : null;
+
+  const isLocked = course ? !course.isFree && !course.hasPurchased : false;
 
   const handleLessonPress = (lesson: Lesson) => {
     router.push(`/lesson/${lesson.id}`);
+  };
+
+  const handleUnlock = () => {
+    if (!course) return;
+    router.push({
+      pathname: '/course/purchase',
+      params: {
+        courseId: String(course.id),
+        productId: course.productId ?? '',
+        title: course.title,
+        price: course.price != null ? String(course.price) : '',
+      },
+    });
   };
 
   return (
@@ -28,8 +60,24 @@ export default function CourseScreen() {
       <Stack.Screen options={{ title: course?.title ?? 'Course', headerBackTitle: 'Back' }} />
       <SafeAreaView style={styles.safe} edges={['bottom']}>
         <ScrollView showsVerticalScrollIndicator={false}>
+
+          {/* Success banner */}
+          {purchasedLocally && (
+            <View style={styles.successBanner}>
+              <Ionicons name="checkmark-circle" size={18} color={Colors.successDark} />
+              <Text variant="label" color={Colors.successDark}>
+                Purchase successful! You now have full access.
+              </Text>
+            </View>
+          )}
+
+          {/* Hero */}
           <View style={[styles.hero, { backgroundColor: Colors.primary }]}>
-            {course && <View style={styles.badgeRow}><Badge variant={course.isFree ? 'free' : 'premium'} /></View>}
+            {course && (
+              <View style={styles.badgeRow}>
+                <Badge variant={course.isFree ? 'free' : 'premium'} />
+              </View>
+            )}
             <Text variant="title" color={Colors.text.inverse} style={styles.courseTitle}>
               {course?.title ?? ''}
             </Text>
@@ -38,9 +86,33 @@ export default function CourseScreen() {
             </Text>
           </View>
 
+          {/* Unlock CTA (shown when locked) */}
+          {isLocked && (
+            <View style={styles.unlockBanner}>
+              <View style={styles.unlockBannerText}>
+                <Text variant="subtitle">Unlock this course</Text>
+                {course?.price != null && (
+                  <Text variant="caption" color={Colors.text.secondary}>
+                    One-time purchase · {course.price}
+                  </Text>
+                )}
+              </View>
+              <Button variant="primary" size="md" onPress={handleUnlock}>
+                Unlock
+              </Button>
+            </View>
+          )}
+
+          {/* Lesson list */}
           <View style={styles.lessonCard}>
             <View style={styles.lessonCardHeader}>
               <Text variant="subtitle">Lessons</Text>
+              {isLocked && (
+                <View style={styles.lockedTag}>
+                  <Ionicons name="lock-closed" size={12} color={Colors.text.muted} />
+                  <Text variant="label" color={Colors.text.muted}>Locked</Text>
+                </View>
+              )}
             </View>
 
             {loading && (
@@ -60,9 +132,27 @@ export default function CourseScreen() {
             )}
 
             {!loading && !error && lessons.map(lesson => (
-              <LessonRow key={lesson.id} lesson={lesson} onPress={handleLessonPress} />
+              <LessonRow
+                key={lesson.id}
+                lesson={lesson}
+                onPress={isLocked ? () => { } : handleLessonPress}
+              />
             ))}
+
+            {/* Locked overlay CTA */}
+            {!loading && !error && lessons.length > 0 && isLocked && (
+              <View style={styles.lockedOverlay}>
+                <Ionicons name="lock-closed-outline" size={28} color={Colors.text.muted} />
+                <Text variant="body" color={Colors.text.secondary} style={styles.lockedOverlayText}>
+                  Purchase this course to access all lessons
+                </Text>
+                <Button variant="primary" size="md" onPress={handleUnlock}>
+                  Unlock Course
+                </Button>
+              </View>
+            )}
           </View>
+
         </ScrollView>
       </SafeAreaView>
     </>
@@ -74,6 +164,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.surface,
   },
+  successBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.successLight,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.success,
+  },
   hero: {
     padding: Spacing.lg,
     paddingTop: Spacing.xl,
@@ -82,6 +182,24 @@ const styles = StyleSheet.create({
   },
   courseTitle: {
     marginTop: Spacing.xs,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+  },
+  unlockBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: Colors.background,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    gap: Spacing.md,
+  },
+  unlockBannerText: {
+    flex: 1,
+    gap: 2,
   },
   lessonCard: {
     backgroundColor: Colors.background,
@@ -92,9 +210,17 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   lessonCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     padding: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+  },
+  lockedTag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   loader: {
     padding: Spacing.xl,
@@ -103,7 +229,15 @@ const styles = StyleSheet.create({
     padding: Spacing.lg,
     alignItems: 'center',
   },
-  badgeRow: {
-    flexDirection: 'row',
+  lockedOverlay: {
+    alignItems: 'center',
+    gap: Spacing.md,
+    padding: Spacing.xl,
+    paddingTop: Spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  lockedOverlayText: {
+    textAlign: 'center',
   },
 });

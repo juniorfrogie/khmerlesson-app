@@ -18,8 +18,7 @@ export function CourseCard({ course, onPress }: CourseCardProps) {
     <TouchableOpacity
       style={[styles.card, isLocked && styles.cardLocked]}
       onPress={() => onPress(course)}
-      activeOpacity={isLocked ? 1 : 0.88}
-      disabled={isLocked}
+      activeOpacity={0.88}
     >
       {/* Portrait thumbnail */}
       <View style={styles.thumbnailWrap}>
