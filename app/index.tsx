@@ -4,19 +4,29 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '@/src/shared/theme';
 import { ONBOARDING_COMPLETE_KEY } from './onboarding';
+import { useAuthStore } from '@/src/features/auth/store/authStore';
 
 export default function Index() {
   const router = useRouter();
+  const { hydrate, isAuthenticated, isGuest } = useAuthStore();
 
   useEffect(() => {
-    AsyncStorage.getItem(ONBOARDING_COMPLETE_KEY).then((value) => {
+    (async () => {
+      await hydrate();
+      const onboardingDone = await AsyncStorage.getItem(ONBOARDING_COMPLETE_KEY);
 
-      //if (value) {
-      //router.replace('/(tabs)');
-      //} else {
-      router.replace('/onboarding');
-      //}
-    });
+      if (!onboardingDone) {
+        router.replace('/onboarding');
+        return;
+      }
+
+      const { isAuthenticated: authed, isGuest: guest } = useAuthStore.getState();
+      if (authed || guest) {
+        router.replace('/(tabs)');
+      } else {
+        router.replace('/auth/login');
+      }
+    })();
   }, []);
 
   return <View style={styles.screen} />;

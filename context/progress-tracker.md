@@ -24,16 +24,23 @@ Update this file after every meaningful implementation change.
 - Tab bar updated: Home + Explore tabs using Ionicons
 - Root layout: consistent header styling, dark status bar
 - Onboarding screen (`app/onboarding.tsx`): 3-slide horizontal pager with icon, English + Khmer title, body copy; Skip / Next / Get Started actions
-- First-launch gate in `app/_layout.tsx`: reads `onboarding_complete` from AsyncStorage; redirects to `/onboarding` on first launch, sets key on finish/skip
+- First-launch gate in `app/index.tsx`: hydrates auth, checks onboarding flag, routes to onboarding / login / tabs accordingly
+- Auth types (`src/features/auth/types.ts`): `User`, `AuthTokens`, `AuthState`, `AuthProvider`
+- Zustand auth store (`src/features/auth/store/authStore.ts`): `setAuth`, `setGuest`, `signOut`, `hydrate` — persists to AsyncStorage
+- Login screen (`app/auth/login.tsx`): Google + Apple buttons, "Continue as Guest" → tabs; `isGuest` state in store
+- Onboarding "Get Started" / Skip now routes to `/auth/login` instead of tabs
+- Apple Sign-In (`src/features/auth/service.ts` `signInWithApple`): calls `expo-apple-authentication`, exchanges identity token with `POST /api/auth/verify-apple-id-token`, stores user + tokens via auth store; cancel is silently ignored, other errors shown inline
+- `apiPost<T>` added to `src/services/api.ts` for authenticated and unauthenticated POST requests
 
 ## In Progress
+
+- Google OAuth via `expo-auth-session` (WEB_CLIENT_ID / IOS_CLIENT_ID ready in .env)
 
 ## Next Up
 
 - Connect to real API (replace mock data)
 - Zustand store for lesson progress state
 - SQLite offline caching (via `src/database/`)
-- Auth screens (sign in / sign up)
 - Premium purchase flow
 
 ## Open Questions

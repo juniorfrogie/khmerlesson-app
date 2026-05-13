@@ -19,11 +19,8 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safe} edges={['top']}>
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <Text variant="caption" color={Colors.text.secondary}>Good morning 👋</Text>
+          <Text variant="caption" color={Colors.text.secondary}>ជម្រាបសួរ 👋</Text>
           <Text variant="title">Keep Learning Khmer</Text>
-          <Text variant="caption" color={Colors.text.secondary}>
-            រៀនភាសាខ្មែរជារៀងរាល់ថ្ងៃ
-          </Text>
         </View>
 
         <View style={styles.section}>

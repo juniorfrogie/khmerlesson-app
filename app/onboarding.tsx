@@ -80,12 +80,12 @@ export default function OnboardingScreen() {
 
   const finish = async () => {
     await AsyncStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
-    router.replace('/(tabs)');
+    router.replace('/auth/login');
   };
 
   const skip = async () => {
     await AsyncStorage.setItem(ONBOARDING_COMPLETE_KEY, 'true');
-    router.replace('/(tabs)');
+    router.replace('/auth/login');
   };
 
   const isLast = activeIndex === SLIDES.length - 1;
