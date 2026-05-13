@@ -40,6 +40,18 @@ export async function apiPost<T>(path: string, body: unknown, accessToken?: stri
   return (json?.data ?? json) as T;
 }
 
+export async function apiDelete(path: string, accessToken?: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'DELETE',
+    headers: baseHeaders(accessToken),
+  });
+
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json?.message ?? `API ${res.status}: ${path}`);
+  }
+}
+
 // Several backend auth endpoints expect application/x-www-form-urlencoded (matches Flutter reference)
 export async function apiPostForm<T>(
   path: string,

@@ -9,6 +9,5 @@ export const getImageUrl = (
     if (path.startsWith("http")) {
         return path;
     }
-
     return `${BUCKET_URL}/${path}`;
 };

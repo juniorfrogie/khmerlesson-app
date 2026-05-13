@@ -2,7 +2,7 @@ export interface Course {
   id: number;
   title: string;
   description: string;
-  thumbnail: string;
+  thumbnailUrl: string;
   isFree: boolean;
   lessonCount?: number;
 }

@@ -17,7 +17,7 @@ export function CourseCard({ course, onPress }: CourseCardProps) {
     <TouchableOpacity style={styles.card} onPress={() => onPress(course)} activeOpacity={0.9}>
       <View style={styles.row}>
         <Image
-          source={course.thumbnail ? { uri: getImageUrl(course.thumbnail) ?? "" } : require('@/assets/images/book-cover.png')}
+          source={course.thumbnailUrl ?? require('@/assets/images/book-cover.png')}
           style={styles.thumbnail}
           contentFit="cover"
         />

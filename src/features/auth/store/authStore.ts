@@ -23,6 +23,9 @@ export const useAuthStore = create<AuthStore>((set) => ({
   isAuthenticated: false,
 
   setAuth: async (user, tokens) => {
+    console.log('[setAuth] user:', user);
+    console.log('[setAuth] accessToken:', tokens.accessToken);
+    console.log('[setAuth] refreshToken:', tokens.refreshToken);
     await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user, tokens }));
     set({ user, tokens, isAuthenticated: true, isGuest: false });
   },
