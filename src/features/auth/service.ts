@@ -9,6 +9,42 @@ interface AuthResponse {
   refreshToken: string;
 }
 
+interface GoogleProfile {
+  email: string;
+  given_name?: string;
+  family_name?: string;
+  picture?: string;
+}
+
+export async function signInWithGoogle(
+  accessToken: string,
+): Promise<{ user: User; tokens: AuthTokens }> {
+  // Fetch Google profile with the OAuth access token
+  const profileRes = await fetch('https://www.googleapis.com/userinfo/v2/me', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!profileRes.ok) throw new Error('Failed to fetch Google profile.');
+  const profile: GoogleProfile = await profileRes.json();
+
+  // register-auth-service handles both new and returning social-auth users
+  const body: Record<string, string> = {
+    email: profile.email,
+    registrationType: 'google',
+  };
+  if (profile.given_name) body.firstName = profile.given_name;
+  if (profile.family_name) body.lastName = profile.family_name;
+
+  const response = await apiPostForm<AuthResponse>('/api/auth/register-auth-service', body);
+
+  return {
+    user: { ...response.user, provider: 'google' },
+    tokens: {
+      accessToken: response.token,
+      refreshToken: response.refreshToken,
+    },
+  };
+}
+
 export async function signInWithApple(): Promise<{ user: User; tokens: AuthTokens }> {
   const credential = await AppleAuthentication.signInAsync({
     requestedScopes: [

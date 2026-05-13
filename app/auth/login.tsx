@@ -2,11 +2,22 @@ import { View, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import * as Google from 'expo-auth-session/providers/google';
+import * as AuthSession from 'expo-auth-session';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
-import { signInWithApple } from '@/src/features/auth/service';
+import { signInWithApple, signInWithGoogle } from '@/src/features/auth/service';
+import { Linking } from 'react-native';
+
+WebBrowser.maybeCompleteAuthSession();
+
+const WEB_CLIENT_ID = process.env.EXPO_PUBLIC_WEB_CLIENT_ID ?? '';
+const IOS_CLIENT_ID = process.env.EXPO_PUBLIC_IOS_CLIENT_ID ?? '';
+// Google iOS OAuth client expects its own reversed-ID scheme as the redirect URI
+const REVERSED_IOS_CLIENT_ID = 'com.googleusercontent.apps.724436108634-0rpo9tolmqftb26ujnc2f0in1btlofrd';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -14,11 +25,44 @@ export default function LoginScreen() {
   const [loadingProvider, setLoadingProvider] = useState<'google' | 'apple' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
+    webClientId: WEB_CLIENT_ID,
+    iosClientId: IOS_CLIENT_ID,
+    redirectUri: AuthSession.makeRedirectUri({
+      native: `${REVERSED_IOS_CLIENT_ID}:/oauthredirect`,
+    }),
+  });
+
+  useEffect(() => {
+    if (!googleResponse) return;
+
+    if (googleResponse.type === 'success') {
+      const accessToken = googleResponse.authentication?.accessToken;
+      if (!accessToken) {
+        setError('Google sign-in failed. Please try again.');
+        setLoadingProvider(null);
+        return;
+      }
+      signInWithGoogle(accessToken)
+        .then(({ user, tokens }) => setAuth(user, tokens))
+        .then(() => router.replace('/(tabs)'))
+        .catch((e: unknown) => {
+          const msg = (e as { message?: string }).message;
+          console.error('[Google sign-in error]', e);
+          setError(msg ?? 'Google sign-in failed. Please try again.');
+        })
+        .finally(() => setLoadingProvider(null));
+    } else if (googleResponse.type === 'cancel' || googleResponse.type === 'dismiss') {
+      setLoadingProvider(null);
+    } else {
+      setLoadingProvider(null);
+    }
+  }, [googleResponse]);
+
   const handleGoogle = async () => {
-    setLoadingProvider('google');
     setError(null);
-    // TODO: Step 2 — Google OAuth
-    setLoadingProvider(null);
+    setLoadingProvider('google');
+    await promptGoogleAsync();
   };
 
   const handleApple = async () => {
@@ -120,8 +164,33 @@ export default function LoginScreen() {
         </View>
 
         {/* Footer note */}
-        <Text variant="caption" color={Colors.text.muted} style={styles.footer}>
-          By continuing, you agree to our Terms of Service and Privacy Policy.
+        <Text
+          variant="caption"
+          color={Colors.text.muted}
+          style={styles.footer}
+        >
+          By continuing, you agree to our{' '}
+
+          <Text
+            style={{ color: Colors.primary }}
+            onPress={() =>
+              Linking.openURL('https://yourdomain.com/terms')
+            }
+          >
+            Terms of Service
+          </Text>
+
+          {' '}and{' '}
+
+          <Text
+            style={{ color: Colors.primary }}
+            onPress={() =>
+              Linking.openURL('https://yourdomain.com/privacy')
+            }
+          >
+            Privacy Policy
+          </Text>
+          .
         </Text>
 
       </View>

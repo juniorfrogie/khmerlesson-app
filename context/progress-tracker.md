@@ -30,11 +30,10 @@ Update this file after every meaningful implementation change.
 - Login screen (`app/auth/login.tsx`): Google + Apple buttons, "Continue as Guest" → tabs; `isGuest` state in store
 - Onboarding "Get Started" / Skip now routes to `/auth/login` instead of tabs
 - Apple Sign-In (`src/features/auth/service.ts` `signInWithApple`): calls `expo-apple-authentication`, exchanges identity token with `POST /api/auth/verify-apple-id-token`, stores user + tokens via auth store; cancel is silently ignored, other errors shown inline
-- `apiPost<T>` added to `src/services/api.ts` for authenticated and unauthenticated POST requests
+- `apiPost<T>` and `apiPostForm<T>` added to `src/services/api.ts`; form-encoded variant used by Apple + Google + other auth endpoints
+- Google Sign-In (`signInWithGoogle` in service.ts): `expo-auth-session` PKCE flow → Google userinfo API → `POST /api/auth/register-auth-service` (form-encoded, `registrationType: "google"`) → store; cancel/dismiss is silent, errors shown inline
 
 ## In Progress
-
-- Google OAuth via `expo-auth-session` (WEB_CLIENT_ID / IOS_CLIENT_ID ready in .env)
 
 ## Next Up
 
