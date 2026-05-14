@@ -18,7 +18,7 @@ export default function CourseScreen() {
   const courseId = id && !isNaN(Number(id)) ? Number(id) : null;
 
   const { courses, refetch } = useCourses();
-  const { lessons, loading, error } = useCourseLessons(courseId);
+  const { lessons, loading, error, forbidden } = useCourseLessons(courseId);
 
   const [purchasedLocally, setPurchasedLocally] = useState(purchased === '1');
 
@@ -36,7 +36,7 @@ export default function CourseScreen() {
     ? { ...baseCourse, hasPurchased: baseCourse.hasPurchased || purchasedLocally }
     : null;
 
-  const isLocked = course ? !course.isFree && !course.hasPurchased : false;
+  const isLocked = (course ? !course.isFree && !course.hasPurchased : false) || forbidden;
 
   const handleLessonPress = (lesson: Lesson) => {
     router.push(`/lesson/${lesson.id}`);
@@ -119,7 +119,7 @@ export default function CourseScreen() {
               <ActivityIndicator color={Colors.primary} style={styles.loader} />
             )}
 
-            {error && (
+            {error && !forbidden && (
               <View style={styles.message}>
                 <Text variant="caption" color={Colors.error}>{error}</Text>
               </View>

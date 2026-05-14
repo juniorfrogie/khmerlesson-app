@@ -11,13 +11,16 @@ import { Text } from '@/src/shared/components/Text';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { signInWithApple, signInWithGoogle } from '@/src/features/auth/service';
 import { Linking } from 'react-native';
+import { Image } from 'expo-image';
 
 WebBrowser.maybeCompleteAuthSession();
 
 const WEB_CLIENT_ID = process.env.EXPO_PUBLIC_WEB_CLIENT_ID ?? '';
 const IOS_CLIENT_ID = process.env.EXPO_PUBLIC_IOS_CLIENT_ID ?? '';
+
+const URL_PRIVACY_POLICY = process.env.EXPO_PUBLIC_API_BASE_URL + '/privacy-policy';
 // Google iOS OAuth client expects its own reversed-ID scheme as the redirect URI
-const REVERSED_IOS_CLIENT_ID = 'com.googleusercontent.apps.724436108634-0rpo9tolmqftb26ujnc2f0in1btlofrd';
+const REVERSED_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_REVERSED_IOS_CLIENT_ID;
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -73,10 +76,20 @@ export default function LoginScreen() {
       await setAuth(user, tokens);
       router.replace('/(tabs)');
     } catch (e: unknown) {
-      const err = e as { code?: string; message?: string };
-      if (err.code === 'ERR_REQUEST_CANCELED') return;
+      const err = e as { code?: string | number; message?: string };
+      if (err.code === 'ERR_REQUEST_CANCELED' || err.code === 1001) return;
       console.error('[Apple sign-in error]', err);
-      setError(err.message ?? 'Apple sign-in failed. Please try again.');
+      const isNoAccount =
+        err.code === 'ERR_REQUEST_UNKNOWN' ||
+        err.code === 'ERR_REQUEST_NOT_HANDLED' ||
+        err.code === 1000 ||
+        err.code === 1003 ||
+        (err.message ?? '').toLowerCase().includes('unknown reason');
+      if (isNoAccount) {
+        setError('Please sign in to your Apple ID in Settings → [your name] and try again.');
+      } else {
+        setError(err.message ?? 'Apple sign-in failed. Please try again.');
+      }
     } finally {
       setLoadingProvider(null);
     }
@@ -94,7 +107,14 @@ export default function LoginScreen() {
         {/* Logo */}
         <View style={styles.logoSection}>
           <View style={styles.logoWrap}>
-            <Ionicons name="book" size={48} color={Colors.primary} />
+            <Image
+              source={require('../../assets/images/icon.png')}
+              style={{
+                width: 64,
+                height: 64,
+              }}
+              contentFit="contain"
+            />
           </View>
           <Text variant="title" style={styles.appName}>KhmerLesson</Text>
           <Text variant="caption" color={Colors.text.secondary} style={styles.tagline}>
@@ -174,18 +194,7 @@ export default function LoginScreen() {
           <Text
             style={{ color: Colors.primary }}
             onPress={() =>
-              Linking.openURL('https://yourdomain.com/terms')
-            }
-          >
-            Terms of Service
-          </Text>
-
-          {' '}and{' '}
-
-          <Text
-            style={{ color: Colors.primary }}
-            onPress={() =>
-              Linking.openURL('https://yourdomain.com/privacy')
+              Linking.openURL(URL_PRIVACY_POLICY)
             }
           >
             Privacy Policy
@@ -219,11 +228,13 @@ const styles = StyleSheet.create({
   logoWrap: {
     width: 96,
     height: 96,
-    borderRadius: Radius.xl,
-    backgroundColor: Colors.primaryMuted,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: Spacing.md,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 3,
   },
   appName: {
     fontSize: FontSize.xxl,

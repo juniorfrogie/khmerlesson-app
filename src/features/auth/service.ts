@@ -35,7 +35,16 @@ export async function signInWithGoogle(
   if (profile.given_name) body.firstName = profile.given_name;
   if (profile.family_name) body.lastName = profile.family_name;
 
-  const response = await apiPostForm<AuthResponse>('/api/auth/register-auth-service', body);
+  let response: AuthResponse;
+  try {
+    response = await apiPostForm<AuthResponse>('/api/auth/register-auth-service', body);
+  } catch (err: unknown) {
+    const msg = (err as Error).message ?? '';
+    if (msg.toLowerCase().includes('already have account') || msg.toLowerCase().includes('already exists')) {
+      throw new Error('This Google account is already registered but could not be signed in. Please contact support.');
+    }
+    throw err;
+  }
 
   return {
     user: { ...response.user, provider: 'google' },
@@ -47,6 +56,9 @@ export async function signInWithGoogle(
 }
 
 export async function signInWithApple(): Promise<{ user: User; tokens: AuthTokens }> {
+  const available = await AppleAuthentication.isAvailableAsync();
+  if (!available) throw new Error('Sign in with Apple is not available on this device.');
+
   const credential = await AppleAuthentication.signInAsync({
     requestedScopes: [
       AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
@@ -75,6 +87,18 @@ export async function signInWithApple(): Promise<{ user: User; tokens: AuthToken
 
   console.log('[Apple] verify response:', JSON.stringify(verifyResponse));
 
+  // If verify-apple-id-token returned a complete session (existing user), use it directly.
+  if (verifyResponse?.token) {
+    const verifiedUser = verifyResponse?.user ?? {};
+    return {
+      user: { ...verifiedUser, provider: 'apple' as const },
+      tokens: {
+        accessToken: verifyResponse.token,
+        refreshToken: verifyResponse.refreshToken ?? '',
+      },
+    };
+  }
+
   const email =
     verifyResponse?.email ??
     verifyResponse?.user?.email ??
@@ -97,7 +121,16 @@ export async function signInWithApple(): Promise<{ user: User; tokens: AuthToken
     lastName,
   };
 
-  const response = await apiPostForm<AuthResponse>('/api/auth/register-auth-service', body);
+  let response: AuthResponse;
+  try {
+    response = await apiPostForm<AuthResponse>('/api/auth/register-auth-service', body);
+  } catch (err: unknown) {
+    const msg = (err as Error).message ?? '';
+    if (msg.toLowerCase().includes('already have account') || msg.toLowerCase().includes('already exists')) {
+      throw new Error('This Apple account is already registered but could not be signed in. Please contact support.');
+    }
+    throw err;
+  }
 
   return {
     user: { ...response.user, provider: 'apple' },

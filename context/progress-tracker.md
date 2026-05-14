@@ -43,6 +43,8 @@ Update this file after every meaningful implementation change.
 - Zustand store for lesson progress state
 - SQLite offline caching (via `src/database/`)
 - Premium purchase flow
+- Load course when open app once only, not every time when navigate to course tap.
+- Add pull to refresh on course page
 
 ## Open Questions
 

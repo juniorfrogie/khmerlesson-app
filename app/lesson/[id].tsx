@@ -24,7 +24,7 @@ export default function LessonScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const lessonId = id ? Number(id) : null;
-  const { lesson, loading, error } = useLessonDetail(lessonId);
+  const { lesson, loading, error, forbidden } = useLessonDetail(lessonId);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const opacity = useRef(new Animated.Value(1)).current;
@@ -117,14 +117,27 @@ export default function LessonScreen() {
           </View>
         )}
 
-        {!!error && (
+        {forbidden && (
+          <View style={styles.center}>
+            <Ionicons name="lock-closed-outline" size={48} color={Colors.text.muted} />
+            <Text variant="body" color={Colors.text.secondary} style={styles.centered}>
+              This lesson requires a course purchase.
+            </Text>
+            <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+              <Ionicons name="arrow-back" size={18} color={Colors.text.secondary} />
+              <Text variant="body" color={Colors.text.secondary}>Go back</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {!!error && !forbidden && (
           <View style={styles.center}>
             <Ionicons name="alert-circle-outline" size={48} color={Colors.error} />
             <Text variant="body" color={Colors.error} style={styles.centered}>{error}</Text>
           </View>
         )}
 
-        {!loading && !error && lesson && (
+        {!loading && !error && !forbidden && lesson && (
           <>
             <View style={styles.lessonMeta}>
               <Text variant="title">{lesson.title}</Text>

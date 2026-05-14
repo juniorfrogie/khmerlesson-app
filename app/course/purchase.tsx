@@ -30,11 +30,13 @@ export default function PurchaseScreen() {
   const [productNotFound, setProductNotFound] = useState(false);
   const [displayPrice, setDisplayPrice] = useState<string | null>(null);
   const [isSubscription, setIsSubscription] = useState(false);
+  const [reconnectKey, setReconnectKey] = useState(0);
 
   const effectiveProductId = productId || `course_${courseId}`;
 
   useEffect(() => {
     let mounted = true;
+    setIapReady(false);
 
     (async () => {
       try {
@@ -63,7 +65,7 @@ export default function PurchaseScreen() {
       mounted = false;
       disconnectIAP().catch(() => { });
     };
-  }, [effectiveProductId, price]);
+  }, [effectiveProductId, price, reconnectKey]);
 
   const handlePurchase = async () => {
     const { tokens, user } = useAuthStore.getState();
@@ -81,8 +83,6 @@ export default function PurchaseScreen() {
         isSubscription,
         price: Number(price) || 0,
         accessToken: tokens.accessToken,
-        userId: user.id,
-        userEmail: user.email,
       });
       console.log('[Purchase] purchaseCourse resolved — navigating to course');
       router.replace({
@@ -93,7 +93,12 @@ export default function PurchaseScreen() {
       const msg = (err as Error).message;
       console.log('[Purchase] purchaseCourse rejected — msg:', msg);
       setLoading(false);
-      if (msg === 'CANCELED') return;
+      if (msg === 'CANCELED') {
+        // Reconnect to flush the stale cancelled transaction from StoreKit's queue.
+        // Without this, the next requestPurchase immediately re-fires the same error.
+        setReconnectKey(k => k + 1);
+        return;
+      }
       Alert.alert('Purchase Failed', msg ?? 'Something went wrong. Please try again.');
     }
   };

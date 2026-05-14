@@ -10,7 +10,7 @@ import { apiDelete } from '@/src/services/api';
 
 const SUPPORT_EMAIL = 'support@khmerlesson.com';
 const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
-console.log(PRIVACY_URL);
+
 export default function MeScreen() {
   const router = useRouter();
   const { user, isAuthenticated, signOut } = useAuthStore();

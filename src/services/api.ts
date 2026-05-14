@@ -17,7 +17,9 @@ export async function apiFetch<T>(path: string, accessToken?: string): Promise<T
   });
 
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${path}`);
+    const err = new Error(`API ${res.status}: ${path}`);
+    (err as Error & { status: number }).status = res.status;
+    throw err;
   }
 
   const json = await res.json();
@@ -33,7 +35,18 @@ export async function apiPost<T>(path: string, body: unknown, accessToken?: stri
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || `API ${res.status}: ${path}`);
+    let message = text || `API ${res.status}: ${path}`;
+    let code: string | undefined;
+    try {
+      const json = JSON.parse(text);
+      if (json?.message) message = json.message;
+      if (json?.code) code = json.code;
+    } catch { /* ignore */ }
+    const err = new Error(message);
+    if (code) (err as Error & { code: string }).code = code;
+    (err as Error & { status: number }).status = res.status;
+    (err as Error & { responseBody: string }).responseBody = text;
+    throw err;
   }
 
   const json = await res.json();
@@ -75,7 +88,17 @@ export async function apiPostForm<T>(
     console.log(`[apiPostForm] ${res.status} ${path} — body: ${text}`);
     let json: Record<string, unknown> = {};
     try { json = JSON.parse(text); } catch { /* ignore */ }
-    throw new Error((json?.message as string) ?? `API ${res.status}: ${path}`);
+
+    // Some backends return "user already exists" as a non-2xx status but still include
+    // the session token in the body — treat that as a successful login.
+    const data = (json?.data ?? json) as Record<string, unknown>;
+    if (data?.token) return data as T;
+
+    const message = (json?.message as string) ?? `API ${res.status}: ${path}`;
+    const code = json?.code as string | undefined;
+    const err = new Error(message);
+    if (code) (err as Error & { code: string }).code = code;
+    throw err;
   }
 
   const json = await res.json();
