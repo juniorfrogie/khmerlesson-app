@@ -51,22 +51,20 @@ export async function loadCourseProduct(
   productId: string,
 ): Promise<CourseProduct | null> {
   const iap = getIAP();
-  const looksLikeSubscription = isSubscriptionProductId(productId);
 
-  // Try non-consumable / consumable IAPs first (skip if SKU looks like a subscription)
-  if (!looksLikeSubscription) {
-    try {
-      const iapResult = await iap.fetchProducts({ skus: [productId], type: 'in-app' });
-      const iapProducts = Array.isArray(iapResult) ? iapResult : [];
-      if (iapProducts[0]) {
-        return { displayPrice: iapProducts[0].displayPrice, isSubscription: false };
-      }
-    } catch (e) {
-      console.log('[IAP] fetchProducts (in-app) error:', e);
+  // Try non-consumable / one-time IAPs first. SKU naming (e.g. "yearly") is not
+  // a reliable signal — a non-consumable yearly-access product would be misclassified.
+  try {
+    const iapResult = await iap.fetchProducts({ skus: [productId], type: 'in-app' });
+    const iapProducts = Array.isArray(iapResult) ? iapResult : [];
+    if (iapProducts[0]) {
+      return { displayPrice: iapProducts[0].displayPrice, isSubscription: false };
     }
+  } catch (e) {
+    console.log('[IAP] fetchProducts (in-app) error:', e);
   }
 
-  // Try subscriptions — use type:'subs' via fetchProducts (getSubscriptions uses legacy 'inapp' internally)
+  // Fall back to auto-renewable subscription lookup.
   try {
     const subResult = await iap.fetchProducts({ skus: [productId], type: 'subs' });
     const subs = Array.isArray(subResult) ? subResult : [];
@@ -77,7 +75,6 @@ export async function loadCourseProduct(
     console.log('[IAP] fetchProducts (subs) error:', e);
   }
 
-  // Product not found in store — return null but caller can still use isSubscriptionProductId()
   return null;
 }
 

@@ -27,6 +27,7 @@ export default function PurchaseScreen() {
   const [loading, setLoading] = useState(false);
   const [iapReady, setIapReady] = useState(false);
   const [iapUnavailable, setIapUnavailable] = useState(false);
+  const [productNotFound, setProductNotFound] = useState(false);
   const [displayPrice, setDisplayPrice] = useState<string | null>(null);
   const [isSubscription, setIsSubscription] = useState(false);
 
@@ -41,6 +42,11 @@ export default function PurchaseScreen() {
         if (!mounted) return;
         const product = await loadCourseProduct(effectiveProductId);
         if (!mounted) return;
+        console.log('[Purchase] loadCourseProduct result:', product, 'for SKU:', effectiveProductId);
+        if (!product) {
+          console.warn('[Purchase] SKU not found in App Store Connect:', effectiveProductId);
+          setProductNotFound(true);
+        }
         setDisplayPrice(product?.displayPrice ?? (price ? `$${Number(price).toFixed(2)}` : null));
         // Use store result when available; fall back to SKU name heuristic
         setIsSubscription(product?.isSubscription ?? isSubscriptionProductId(effectiveProductId));
@@ -122,6 +128,14 @@ export default function PurchaseScreen() {
                   In-app purchases require a native build.{'\n'}Run{' '}
                   <Text variant="caption" weight="bold" color={Colors.text.primary}>expo run:ios</Text>
                   {' '}to test purchases.
+                </Text>
+              </View>
+            ) : productNotFound ? (
+              <View style={styles.iapWarning}>
+                <Ionicons name="warning-outline" size={20} color={Colors.warning} />
+                <Text variant="caption" color={Colors.text.secondary} style={styles.iapWarningText}>
+                  Product not found in App Store Connect.{'\n'}
+                  SKU: <Text variant="caption" weight="bold" color={Colors.text.primary}>{effectiveProductId}</Text>
                 </Text>
               </View>
             ) : (
