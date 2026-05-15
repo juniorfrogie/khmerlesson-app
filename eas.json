@@ -1,0 +1,33 @@
+{
+  "cli": {
+    "version": ">= 18.13.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://khmerlessons.app",
+        "EXPO_PUBLIC_BUCKET_URL": "https://khmer-lesson-bucket.sfo3.digitaloceanspaces.com"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://khmerlessons.app",
+        "EXPO_PUBLIC_BUCKET_URL": "https://khmer-lesson-bucket.sfo3.digitaloceanspaces.com"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_BASE_URL": "https://khmerlessons.app",
+        "EXPO_PUBLIC_BUCKET_URL": "https://khmer-lesson-bucket.sfo3.digitaloceanspaces.com"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Khmer Lessons",
-    "slug": "Learn Khmer fast.",
+    "slug": "khmer-lessons",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -10,6 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "buildNumber": "9",
       "bundleIdentifier": "com.digital606.khmerlesson",
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -17,8 +18,14 @@
             "CFBundleURLSchemes": [
               "com.googleusercontent.apps.724436108634-0rpo9tolmqftb26ujnc2f0in1btlofrd"
             ]
+          },
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.724436108634-0rpo9tolmqftb26ujnc2f0in1btlofrd"
+            ]
           }
-        ]
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -54,6 +61,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "627ce6c7-315d-4f76-8543-a6074a6dabb4"
+      }
     }
   }
 }
