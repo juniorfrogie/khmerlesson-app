@@ -9,15 +9,20 @@ import type { Lesson } from '../types';
 interface LessonRowProps {
   lesson: Lesson;
   onPress: (lesson: Lesson) => void;
+  completed?: boolean;
 }
 
-export function LessonRow({ lesson, onPress }: LessonRowProps) {
+export function LessonRow({ lesson, onPress, completed = false }: LessonRowProps) {
   const levelVariant = lesson.level.toLowerCase() as 'beginner' | 'intermediate' | 'advanced';
 
   return (
     <TouchableOpacity style={styles.row} onPress={() => onPress(lesson)} activeOpacity={0.7}>
-      <View style={styles.iconWrap}>
-        <Ionicons name="book-outline" size={18} color={Colors.primary} />
+      <View style={[styles.iconWrap, completed && styles.iconWrapDone]}>
+        <Ionicons
+          name={completed ? 'checkmark' : 'book-outline'}
+          size={18}
+          color={completed ? Colors.successDark : Colors.primary}
+        />
       </View>
       <View style={styles.info}>
         <Text variant="body" weight="medium">{lesson.title}</Text>
@@ -56,6 +61,9 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  iconWrapDone: {
+    backgroundColor: Colors.successLight,
   },
   info: {
     flex: 1,

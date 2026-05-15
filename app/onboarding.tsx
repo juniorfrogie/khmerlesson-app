@@ -1,10 +1,11 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View,
   FlatList,
   StyleSheet,
   Dimensions,
   TouchableOpacity,
+  Animated,
   type ViewToken,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -14,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { Button } from '@/src/shared/components/Button';
+import { prefetchCourses } from '@/src/services/hooks/useCourses';
 
 const { width } = Dimensions.get('window');
 
@@ -59,10 +61,68 @@ const SLIDES: Slide[] = [
   },
 ];
 
+type ToastType = 'success' | 'warning' | 'error';
+
+interface Toast {
+  message: string;
+  type: ToastType;
+}
+
+const TOAST_ICON: Record<ToastType, keyof typeof Ionicons.glyphMap> = {
+  success: 'checkmark-circle',
+  warning: 'wifi-outline',
+  error: 'alert-circle-outline',
+};
+
+const TOAST_BG: Record<ToastType, string> = {
+  success: Colors.successDark,
+  warning: Colors.warningDark,
+  error: Colors.error,
+};
+
+const TOAST_DURATION: Record<ToastType, number> = {
+  success: 2000,
+  warning: 4000,
+  error: 4000,
+};
+
 export default function OnboardingScreen() {
   const router = useRouter();
   const listRef = useRef<FlatList<Slide>>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const toastAnim = useRef(new Animated.Value(0)).current;
+  const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((message: string, type: ToastType) => {
+    if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    setToast({ message, type });
+    toastAnim.setValue(0);
+    Animated.timing(toastAnim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+    dismissTimer.current = setTimeout(() => {
+      Animated.timing(toastAnim, { toValue: 0, duration: 280, useNativeDriver: true }).start(() =>
+        setToast(null),
+      );
+    }, TOAST_DURATION[type]);
+  }, [toastAnim]);
+
+  // Prefetch course data in the background while the user reads the onboarding slides.
+  // On success the home screen will render immediately with no loading spinner.
+  useEffect(() => {
+    prefetchCourses()
+      .then(() => showToast('Courses ready', 'success'))
+      .catch(err => {
+        const isOffline = (err as Error).message === 'Network request failed';
+        showToast(
+          isOffline ? 'No internet connection' : 'Server unavailable',
+          isOffline ? 'warning' : 'error',
+        );
+      });
+
+    return () => {
+      if (dismissTimer.current) clearTimeout(dismissTimer.current);
+    };
+  }, [showToast]);
 
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     if (viewableItems[0]?.index != null) {
@@ -92,6 +152,18 @@ export default function OnboardingScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      {/* Toast banner */}
+      {toast && (
+        <Animated.View
+          style={[styles.toast, { backgroundColor: TOAST_BG[toast.type], opacity: toastAnim }]}
+        >
+          <Ionicons name={TOAST_ICON[toast.type]} size={16} color="#fff" />
+          <Text variant="label" color="#fff" style={styles.toastText}>
+            {toast.message}
+          </Text>
+        </Animated.View>
+      )}
+
       <View style={styles.skipRow}>
         {!isLast && (
           <TouchableOpacity onPress={skip} hitSlop={12} style={styles.skipBtn}>
@@ -176,6 +248,22 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  toast: {
+    position: 'absolute',
+    top: 52,
+    left: Spacing.lg,
+    right: Spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm + 2,
+    borderRadius: Radius.md,
+    zIndex: 100,
+  },
+  toastText: {
+    flex: 1,
   },
   skipRow: {
     height: 44,

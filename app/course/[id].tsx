@@ -1,8 +1,9 @@
-import { ScrollView, View, StyleSheet, ActivityIndicator } from 'react-native';
+import { ScrollView, View, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import { useState, useCallback } from 'react';
 import { Ionicons } from '@expo/vector-icons';
+import { friendlyError } from '@/src/shared/utils/error';
 import { Colors, Spacing, Radius } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { Button } from '@/src/shared/components/Button';
@@ -10,6 +11,7 @@ import { Badge } from '@/src/shared/components/Badge';
 import { LessonRow } from '@/src/features/lessons/components/LessonRow';
 import { useCourseLessons } from '@/src/services/hooks/useCourseLessons';
 import { useCourses } from '@/src/services/hooks/useCourses';
+import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import type { Lesson } from '@/src/features/lessons/types';
 
 export default function CourseScreen() {
@@ -18,7 +20,8 @@ export default function CourseScreen() {
   const courseId = id && !isNaN(Number(id)) ? Number(id) : null;
 
   const { courses, refetch } = useCourses();
-  const { lessons, loading, error, forbidden } = useCourseLessons(courseId);
+  const { lessons, loading, error, forbidden, refetch: refetchLessons } = useCourseLessons(courseId);
+  const completedInCourse = useProgressStore(s => s.completedLessons[courseId ?? -1]) ?? [];
 
   const [purchasedLocally, setPurchasedLocally] = useState(purchased === '1');
 
@@ -27,8 +30,9 @@ export default function CourseScreen() {
       if (purchased === '1') {
         setPurchasedLocally(true);
         refetch();
+        refetchLessons();
       }
-    }, [purchased, refetch]),
+    }, [purchased, refetch, refetchLessons]),
   );
 
   const baseCourse = courses.find(c => c.id === courseId);
@@ -39,7 +43,14 @@ export default function CourseScreen() {
   const isLocked = (course ? !course.isFree && !course.hasPurchased : false) || forbidden;
 
   const handleLessonPress = (lesson: Lesson) => {
-    router.push(`/lesson/${lesson.id}`);
+    router.push({
+      pathname: '/lesson/[id]',
+      params: {
+        id: String(lesson.id),
+        courseId: String(courseId ?? ''),
+        courseTitle: course?.title ?? '',
+      },
+    });
   };
 
   const handleUnlock = () => {
@@ -119,11 +130,24 @@ export default function CourseScreen() {
               <ActivityIndicator color={Colors.primary} style={styles.loader} />
             )}
 
-            {error && !forbidden && (
-              <View style={styles.message}>
-                <Text variant="caption" color={Colors.error}>{error}</Text>
-              </View>
-            )}
+            {error && !forbidden && (() => {
+              const { message, isOffline } = friendlyError(error);
+              return (
+                <View style={styles.errorState}>
+                  <Ionicons
+                    name={isOffline ? 'wifi-outline' : 'alert-circle-outline'}
+                    size={28}
+                    color={Colors.text.muted}
+                  />
+                  <Text variant="caption" color={Colors.text.secondary} style={styles.errorMsg}>
+                    {message}
+                  </Text>
+                  <TouchableOpacity onPress={refetchLessons} style={styles.retryBtn}>
+                    <Text variant="label" color={Colors.primary} weight="medium">Try Again</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            })()}
 
             {!loading && !error && lessons.length === 0 && (
               <View style={styles.message}>
@@ -136,6 +160,7 @@ export default function CourseScreen() {
                 key={lesson.id}
                 lesson={lesson}
                 onPress={isLocked ? () => { } : handleLessonPress}
+                completed={completedInCourse.includes(lesson.id)}
               />
             ))}
 
@@ -239,5 +264,23 @@ const styles = StyleSheet.create({
   },
   lockedOverlayText: {
     textAlign: 'center',
+  },
+  errorState: {
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+  },
+  errorMsg: {
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  retryBtn: {
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
   },
 });

@@ -2,7 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Animated, ActivityIndicator, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
+import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import { Ionicons } from '@expo/vector-icons';
+import { friendlyError } from '@/src/shared/utils/error';
 import { Colors, Spacing, Radius, Shadow } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { Badge } from '@/src/shared/components/Badge';
@@ -21,10 +23,11 @@ interface VocabItem {
 }
 
 export default function LessonScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, courseId: courseIdParam, courseTitle } = useLocalSearchParams<{ id: string; courseId?: string; courseTitle?: string }>();
   const router = useRouter();
   const lessonId = id ? Number(id) : null;
-  const { lesson, loading, error, forbidden } = useLessonDetail(lessonId);
+  const courseId = courseIdParam ? Number(courseIdParam) : null;
+  const { lesson, loading, error, forbidden, refetch } = useLessonDetail(lessonId);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const opacity = useRef(new Animated.Value(1)).current;
@@ -55,6 +58,16 @@ export default function LessonScreen() {
     setSpeakingIndex(null);
   }, [currentIndex]);
 
+  useEffect(() => {
+    if (!lesson || !courseId) return;
+    useProgressStore.getState().setLastAccessed({
+      courseId,
+      lessonId: lesson.id,
+      courseTitle: courseTitle ?? '',
+      lessonTitle: lesson.title,
+    });
+  }, [lesson, courseId, courseTitle]);
+
   const speakKhmer = (khmer: string, phonemic: string, index: number) => {
     if (speakingIndex === index) {
       Speech.stop();
@@ -81,7 +94,11 @@ export default function LessonScreen() {
   };
 
   const handleNext = () => {
-    if (isLast) { router.back(); return; }
+    if (isLast) {
+      if (courseId && lesson) useProgressStore.getState().markComplete(courseId, lesson.id);
+      router.back();
+      return;
+    }
     goTo(currentIndex + 1);
   };
 
@@ -130,12 +147,24 @@ export default function LessonScreen() {
           </View>
         )}
 
-        {!!error && !forbidden && (
-          <View style={styles.center}>
-            <Ionicons name="alert-circle-outline" size={48} color={Colors.error} />
-            <Text variant="body" color={Colors.error} style={styles.centered}>{error}</Text>
-          </View>
-        )}
+        {!!error && !forbidden && (() => {
+          const { message, isOffline } = friendlyError(error);
+          return (
+            <View style={styles.center}>
+              <Ionicons
+                name={isOffline ? 'wifi-outline' : 'alert-circle-outline'}
+                size={48}
+                color={Colors.text.muted}
+              />
+              <Text variant="body" color={Colors.text.secondary} style={styles.centered}>
+                {message}
+              </Text>
+              <TouchableOpacity style={styles.retryBtn} onPress={refetch}>
+                <Text variant="label" color={Colors.primary} weight="medium">Try Again</Text>
+              </TouchableOpacity>
+            </View>
+          );
+        })()}
 
         {!loading && !error && !forbidden && lesson && (
           <>
@@ -325,6 +354,14 @@ const styles = StyleSheet.create({
   },
   centered: {
     textAlign: 'center',
+  },
+  retryBtn: {
+    marginTop: Spacing.xs,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
   },
   vocabList: {
     gap: Spacing.sm,

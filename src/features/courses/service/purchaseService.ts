@@ -190,14 +190,15 @@ export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
         const jws = Platform.OS === 'ios'
           ? (purchase.transactionReceipt ?? purchase.purchaseToken ?? null)
           : null;
+        const receipt = Platform.OS === 'ios' ? jws : (purchase.purchaseToken ?? null);
         const purchaseDate = purchase.transactionDate
           ? new Date(purchase.transactionDate).toISOString()
           : new Date().toISOString();
         const rawId = purchase.transactionId ?? purchase.id ?? purchase.purchaseToken ?? null;
         const purchaseId = (!rawId || rawId === '0') ? productId : rawId;
 
-        // Extract actual price from JWS (Apple stores price in milliunits: 1000 = $1.00 = 100 cents).
-        // This is more reliable than the price param passed from the course list, which may be null.
+        // Extract actual price from JWS. Apple stores price in milliunits (1000 = $1.00).
+        // Divide by 1000 to get major currency units as the backend expects.
         let purchaseAmount = price;
         try {
           if (jws) {
@@ -206,12 +207,23 @@ export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
             // eslint-disable-next-line no-undef
             const jwsPayload = JSON.parse(atob(padded));
             if (typeof jwsPayload.price === 'number') {
-              purchaseAmount = jwsPayload.price / 10; // milliunits → cents
+              purchaseAmount = jwsPayload.price / 1000; // milliunits → major currency units
             }
           }
         } catch { /* keep fallback */ }
 
-        const historyPayload = { mainLessonId: courseId, purchaseId, platformType: Platform.OS, purchaseAmount, purchaseDate, paymentStatus: 'completed', jws };
+        const { user } = useAuthStore.getState();
+        const historyPayload = {
+          userId: user?.id ?? '',
+          mainLessonId: courseId,
+          purchaseId,
+          platformType: Platform.OS,
+          purchaseAmount,
+          purchaseDate,
+          paymentStatus: 'completed',
+          jws,
+          receipt,
+        };
         console.log('[IAP:HISTORY_PAYLOAD]', JSON.stringify(historyPayload, null, 2));
         await callWithRefresh('/api/v1/purchase-history', historyPayload);
         console.log('[IAP] purchase history recorded');
@@ -265,11 +277,18 @@ export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
       } catch { /* ignore decode errors */ }
       // ─────────────────────────────────────────────────────────────────────────
 
+      const receipt = Platform.OS === 'ios' ? jws : (purchase.purchaseToken ?? null);
+      const { user } = useAuthStore.getState();
       const historyPayload = {
-        mainLessonId: courseId, purchaseId,
-        platformType: Platform.OS, purchaseAmount: price,
-        purchaseDate, paymentStatus: 'completed',
+        userId: user?.id ?? '',
+        mainLessonId: courseId,
+        purchaseId,
+        platformType: Platform.OS,
+        purchaseAmount: price,
+        purchaseDate,
+        paymentStatus: 'completed',
         jws,
+        receipt,
       };
 
       try {

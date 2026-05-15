@@ -35,6 +35,7 @@ export async function apiPost<T>(path: string, body: unknown, accessToken?: stri
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    console.log(`[apiPost] ${res.status} ${path} — response: ${text}`);
     let message = text || `API ${res.status}: ${path}`;
     let code: string | undefined;
     try {

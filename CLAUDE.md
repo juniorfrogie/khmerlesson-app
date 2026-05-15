@@ -63,10 +63,16 @@ context/                      # Living project spec — read before implementing
     api-overview.md           # Full API endpoint list
     mobile-data-models.md     # Authoritative type shapes from backend
   feature-specs/              # Numbered spec files — work in order
+  mock-data/                  # Khmer mock content used until API/SQLite is ready
   progress-tracker.md
   architecture.md
   ai-workflow-rules.md
+  code-standards.md
+  product-context.md
+  ui-context.md
 ```
+
+**Import alias:** `@/` resolves to the repo root, so `@/src/...` imports work everywhere.
 
 ## Environment
 
@@ -100,7 +106,7 @@ When adding a new endpoint:
 
 ## Auth Flow
 
-Auth state lives in `src/features/auth/store/authStore.ts` (Zustand, persisted to AsyncStorage key `auth_state`). Methods: `setAuth`, `setGuest`, `signOut`, `hydrate`.
+Auth state lives in `src/features/auth/store/authStore.ts` (Zustand, persisted to AsyncStorage key `auth_state`). Methods: `setAuth`, `setGuest`, `signOut`, `hydrate`, `refreshTokens`.
 
 `app/index.tsx` calls `hydrate()` on mount, then routes to onboarding / login / tabs.
 
@@ -109,6 +115,12 @@ Auth state lives in `src/features/auth/store/authStore.ts` (Zustand, persisted t
 - **Google**: 1 API call — `expo-auth-session` PKCE → Google userinfo → `POST /api/auth/register-auth-service` (form-encoded, `registrationType: "google"`)
 
 Both silently ignore cancel/dismiss; other errors surface inline.
+
+## In-App Purchases
+
+`src/features/courses/service/purchaseService.ts` wraps `react-native-iap`. The IAP module is loaded via deferred `require()` so the file loads safely in Expo Go (NitroModules only work in native builds). Calls in Expo Go throw `IAP_NOT_AVAILABLE` and the purchase modal should handle this.
+
+Purchase flow: `connectIAP` → `loadCourseProduct` (tries in-app, falls back to subscription) → `purchaseCourse` → records to `POST /api/v1/purchase-history` → `finishTransaction`.
 
 ## Architecture: Data Flow
 
@@ -150,6 +162,8 @@ Icons: **Ionicons** from `@expo/vector-icons` only.
 ## Khmer Text
 
 All `Text` variant `lineHeight` values are ~1.6× `fontSize` to prevent Khmer stacked-glyph clipping. For any custom `fontSize` override, apply the same ratio. Never set `lineHeight` below 1.5× for text that may contain Khmer script.
+
+Audio (`expo-av`) and text-to-speech (`expo-speech`) packages are installed for future lesson audio playback.
 
 ## Data Types
 

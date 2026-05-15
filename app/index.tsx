@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors } from '@/src/shared/theme';
 import { ONBOARDING_COMPLETE_KEY } from './onboarding';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
+import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 
 export default function Index() {
   const router = useRouter();
@@ -12,7 +13,7 @@ export default function Index() {
 
   useEffect(() => {
     (async () => {
-      await hydrate();
+      await Promise.all([hydrate(), useProgressStore.getState().hydrate()]);
       const onboardingDone = await AsyncStorage.getItem(ONBOARDING_COMPLETE_KEY);
 
       if (!onboardingDone) {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { apiFetch } from '../api';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import type { LessonDetail } from '@/src/features/lessons/types';
@@ -12,6 +12,7 @@ interface State {
 
 export function useLessonDetail(lessonId: number | null) {
   const [state, setState] = useState<State>({ lesson: null, loading: true, error: null, forbidden: false });
+  const [tick, setTick] = useState(0);
   const accessToken = useAuthStore(s => s.tokens?.accessToken);
 
   useEffect(() => {
@@ -23,7 +24,9 @@ export function useLessonDetail(lessonId: number | null) {
         const is403 = (err as Error & { status?: number }).status === 403;
         setState({ lesson: null, loading: false, error: is403 ? null : err.message, forbidden: is403 });
       });
-  }, [lessonId, accessToken]);
+  }, [lessonId, accessToken, tick]);
 
-  return state;
+  const refetch = useCallback(() => setTick(t => t + 1), []);
+
+  return { ...state, refetch };
 }

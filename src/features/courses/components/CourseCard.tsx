@@ -28,8 +28,11 @@ export function CourseCard({ course, onPress }: CourseCardProps) {
               ? getImageUrl(course.thumbnailUrl)
               : require('@/assets/images/book-cover.png')
           }
+          placeholder={require('@/assets/images/book-cover.png')}
           style={[styles.thumbnail, isLocked && styles.thumbnailLocked]}
           contentFit="cover"
+          cachePolicy="memory-disk"
+          transition={200}
         />
         {/* price / lock badge */}
         {isLocked && (
