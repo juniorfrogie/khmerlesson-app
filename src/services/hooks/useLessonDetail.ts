@@ -21,8 +21,9 @@ export function useLessonDetail(lessonId: number | null) {
     apiFetch<LessonDetail>(`/api/v1/lessons/${lessonId}`, accessToken)
       .then(lesson => setState({ lesson, loading: false, error: null, forbidden: false }))
       .catch(err => {
-        const is403 = (err as Error & { status?: number }).status === 403;
-        setState({ lesson: null, loading: false, error: is403 ? null : err.message, forbidden: is403 });
+        const status = (err as Error & { status?: number }).status;
+        const isForbidden = status === 401 || status === 403;
+        setState({ lesson: null, loading: false, error: isForbidden ? null : err.message, forbidden: isForbidden });
       });
   }, [lessonId, accessToken, tick]);
 

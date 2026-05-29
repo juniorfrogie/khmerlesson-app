@@ -133,7 +133,7 @@ export default function LessonScreen() {
           <View style={styles.center}>
             <Ionicons name="lock-closed-outline" size={48} color={Colors.text.muted} />
             <Text variant="body" color={Colors.text.secondary} style={styles.centered}>
-              This lesson requires a course purchase.
+              This lesson is available for premium users only.
             </Text>
             <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
               <Ionicons name="arrow-back" size={18} color={Colors.text.secondary} />

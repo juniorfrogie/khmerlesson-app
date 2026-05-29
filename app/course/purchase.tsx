@@ -70,7 +70,10 @@ export default function PurchaseScreen() {
   const handlePurchase = async () => {
     const { tokens, user } = useAuthStore.getState();
     if (!tokens?.accessToken || !user) {
-      Alert.alert('Not logged in', 'Please log in to purchase this course.');
+      Alert.alert('Not logged in', 'Please log in to purchase this course.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Log In', onPress: () => router.push('/auth/login') },
+      ]);
       return;
     }
 
