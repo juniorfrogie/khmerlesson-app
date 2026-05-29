@@ -37,6 +37,9 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# local guides (not for version control)
+deploy-guide.md
+
 app-example
 
 # generated native folders
