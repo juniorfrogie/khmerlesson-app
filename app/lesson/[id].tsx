@@ -14,7 +14,7 @@ import { useLessonDetail } from '@/src/services/hooks/useLessonDetail';
 import VocabParser from '@/src/shared/utils/vocabParser';
 import RenderHtml from 'react-native-render-html';
 import { useWindowDimensions } from 'react-native';
-import * as Speech from 'expo-speech';
+import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
 
 interface VocabItem {
   english: string;
@@ -38,25 +38,16 @@ export default function LessonScreen() {
   const isLast = currentIndex === total - 1;
 
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
-  const khmerVoice = useRef<{ language: string; identifier?: string } | null>(null);
   const { width } = useWindowDimensions();
 
   useEffect(() => {
-    Speech.getAvailableVoicesAsync()
-      .then(voices => {
-        const match = voices.find(v => v.language.startsWith('km'));
-        khmerVoice.current = match
-          ? { language: match.language, identifier: match.identifier }
-          : null;
-        console.log('[TTS] Khmer voice:', match ?? 'not found — will use default');
-      })
-      .catch(() => { });
-  }, []);
-
-  useEffect(() => {
-    Speech.stop();
+    stopTTS();
     setSpeakingIndex(null);
   }, [currentIndex]);
+
+  useEffect(() => {
+    return () => { stopTTS(); };
+  }, []);
 
   useEffect(() => {
     if (!lesson || !courseId) return;
@@ -68,22 +59,24 @@ export default function LessonScreen() {
     });
   }, [lesson, courseId, courseTitle]);
 
-  const speakKhmer = (khmer: string, phonemic: string, index: number) => {
+  const speakKhmer = async (khmer: string, index: number) => {
     if (speakingIndex === index) {
-      Speech.stop();
+      await stopTTS();
       setSpeakingIndex(null);
       return;
     }
-    Speech.stop();
     setSpeakingIndex(index);
-    const voice = khmerVoice.current;
-    Speech.speak(voice ? khmer : phonemic, {
-      language: voice ? voice.language : 'en-US',
-      ...(voice?.identifier ? { voice: voice.identifier } : {}),
-      onDone: () => setSpeakingIndex(null),
-      onStopped: () => setSpeakingIndex(null),
-      onError: () => setSpeakingIndex(null),
-    });
+    try {
+      const sound = await playTTS(khmer);
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          setSpeakingIndex(null);
+          sound.unloadAsync();
+        }
+      });
+    } catch {
+      setSpeakingIndex(null);
+    }
   };
 
   const goTo = (next: number) => {
@@ -197,10 +190,10 @@ export default function LessonScreen() {
                     <View style={styles.vocabList}>
                       {section.items.map((item: VocabItem, i: number) => (
                         <View key={i} style={styles.vocabCard}>
-                          {/* disable audio function */}
-                          {/* <TouchableOpacity
+                          {/* audio function */}
+                          <TouchableOpacity
                             style={styles.speakerBtn}
-                            onPress={() => speakKhmer(item.khmer, item.phonemic, i)}
+                            onPress={() => speakKhmer(item.khmer, i)}
                             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                           >
                             <Ionicons
@@ -208,7 +201,7 @@ export default function LessonScreen() {
                               size={18}
                               color={speakingIndex === i ? Colors.primaryLight : Colors.primary}
                             />
-                          </TouchableOpacity> */}
+                          </TouchableOpacity>
                           <Text variant="subtitle" color={Colors.primary} style={styles.vocabKhmer}>
                             {item.khmer}
                           </Text>
