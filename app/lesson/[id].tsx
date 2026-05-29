@@ -15,6 +15,7 @@ import VocabParser from '@/src/shared/utils/vocabParser';
 import RenderHtml from 'react-native-render-html';
 import { useWindowDimensions } from 'react-native';
 import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
+import { useQuizByLesson } from '@/src/services/hooks/useQuizByLesson';
 
 interface VocabItem {
   english: string;
@@ -39,6 +40,7 @@ export default function LessonScreen() {
 
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const { width } = useWindowDimensions();
+  const { quiz: lessonQuiz } = useQuizByLesson(lessonId);
 
   useEffect(() => {
     stopTTS();
@@ -227,6 +229,17 @@ export default function LessonScreen() {
               </View>
             )}
 
+            {isLast && lessonQuiz && (
+              <TouchableOpacity
+                style={styles.quizBanner}
+                onPress={() => router.push(`/quiz/${lessonQuiz.id}`)}
+              >
+                <Ionicons name="barbell-outline" size={20} color={Colors.primary} />
+                <Text variant="body" color={Colors.primary} weight="semibold">Take the Quiz</Text>
+                <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+              </TouchableOpacity>
+            )}
+
             {total > 0 && (
               <View style={styles.nav}>
                 <TouchableOpacity style={styles.backBtn} onPress={handlePrev}>
@@ -355,6 +368,17 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Colors.primary,
+  },
+  quizBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primaryMuted,
   },
   vocabList: {
     gap: Spacing.sm,
