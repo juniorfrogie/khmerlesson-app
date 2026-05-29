@@ -48,7 +48,7 @@ export default function LessonScreen() {
   }, [currentIndex]);
 
   useEffect(() => {
-    return () => { stopTTS(); };
+    return () => stopTTS();
   }, []);
 
   useEffect(() => {
@@ -63,17 +63,17 @@ export default function LessonScreen() {
 
   const speakKhmer = async (khmer: string, index: number) => {
     if (speakingIndex === index) {
-      await stopTTS();
+      stopTTS();
       setSpeakingIndex(null);
       return;
     }
     setSpeakingIndex(index);
     try {
-      const sound = await playTTS(khmer);
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded && status.didJustFinish) {
+      const player = await playTTS(khmer);
+      player.addListener('playbackStatusUpdate', (status) => {
+        if (status.didJustFinish) {
           setSpeakingIndex(null);
-          sound.unloadAsync();
+          player.remove();
         }
       });
     } catch {

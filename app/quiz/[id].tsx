@@ -67,9 +67,9 @@ export default function QuizScreen() {
   const scorePercent = total > 0 ? correctCount / total : 0;
   const resultMessage =
     scorePercent === 1 ? 'Perfect score!' :
-    scorePercent >= 0.8 ? 'Great work!' :
-    scorePercent >= 0.6 ? 'Good effort!' :
-    'Keep practicing!';
+      scorePercent >= 0.8 ? 'Great work!' :
+        scorePercent >= 0.6 ? 'Good effort!' :
+          'Keep practicing!';
 
   return (
     <>
@@ -259,6 +259,7 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
   },
   questionText: {
+    paddingTop: Spacing.md,
     lineHeight: FontSize.lg * 1.6,
   },
   divider: { height: 1, backgroundColor: Colors.borderLight },

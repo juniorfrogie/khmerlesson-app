@@ -57,7 +57,8 @@
           }
         }
       ],
-      "react-native-iap"
+      "react-native-iap",
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true,
