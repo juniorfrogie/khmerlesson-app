@@ -12,10 +12,23 @@ type Course = {
   id: number
   title: string
   description: string
-  imageCover: string
-  free: boolean
-  price?: number
+  thumbnailUrl: string
+  /** True = no login or subscription needed */
+  isFree: boolean
+  /** User can open this course (free OR their plan includes it) */
+  hasAccess: boolean
+  /** Visible in the list but not yet openable */
+  comingSoon: boolean
+  lessonCount?: number
+  order?: number
 }
+```
+
+UI access logic:
+```
+if comingSoon  → show lock + "Coming Soon" label, non-tappable
+if hasAccess   → open normally
+else           → show lock + "Subscribe" button → /subscription
 ```
 
 ---

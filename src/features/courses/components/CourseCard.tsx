@@ -12,15 +12,12 @@ interface CourseCardProps {
 }
 
 export function CourseCard({ course, onPress }: CourseCardProps) {
-  const isLocked = !course.isFree && !course.hasPurchased;
+  const isComingSoon = course.comingSoon;
+  const isLocked = !course.hasAccess && !isComingSoon;
+  const dimmed = isLocked || isComingSoon;
 
-  return (
-    <TouchableOpacity
-      style={[styles.card, isLocked && styles.cardLocked]}
-      onPress={() => onPress(course)}
-      activeOpacity={0.88}
-    >
-      {/* Portrait thumbnail */}
+  const card = (
+    <View style={[styles.card, dimmed && styles.cardLocked]}>
       <View style={styles.thumbnailWrap}>
         <Image
           source={
@@ -29,55 +26,63 @@ export function CourseCard({ course, onPress }: CourseCardProps) {
               : require('@/assets/images/book-cover.png')
           }
           placeholder={require('@/assets/images/book-cover.png')}
-          style={[styles.thumbnail, isLocked && styles.thumbnailLocked]}
+          style={[styles.thumbnail, dimmed && styles.thumbnailLocked]}
           contentFit="cover"
           cachePolicy="memory-disk"
           transition={200}
         />
-        {/* price / lock badge */}
-        {isLocked && (
+        {dimmed && (
           <View style={styles.badgeOverlay}>
             <Ionicons name="lock-closed" size={11} color={Colors.info} />
-            {course.price != null && (
-              <Text style={styles.price}>{course.price}</Text>
+            {isComingSoon && (
+              <Text style={styles.badgeText}>Soon</Text>
             )}
           </View>
         )}
       </View>
 
-      {/* Content */}
       <View style={styles.content}>
         <View style={styles.topGroup}>
-          {/* Title */}
           <Text
             variant="subtitle"
             numberOfLines={2}
             style={styles.title}
-            color={isLocked ? Colors.text.muted : Colors.text.primary}
+            color={dimmed ? Colors.text.muted : Colors.text.primary}
           >
             {course.title}
           </Text>
-
-          {/* Description */}
           <Text variant="caption" color={Colors.text.muted} numberOfLines={2} style={styles.description}>
             {course.description}
           </Text>
-
-          {/* Lesson count below description */}
           {course.lessonCount != null && (
             <View style={[styles.metaRow, styles.lessonsRow]}>
               <Ionicons
                 name="book-outline"
                 size={12}
-                color={isLocked ? Colors.text.muted : Colors.text.secondary}
+                color={dimmed ? Colors.text.muted : Colors.text.secondary}
               />
-              <Text variant="label" color={isLocked ? Colors.text.muted : Colors.text.secondary}>
+              <Text variant="label" color={dimmed ? Colors.text.muted : Colors.text.secondary}>
                 {course.lessonCount} lessons
               </Text>
             </View>
           )}
+          {isComingSoon && (
+            <View style={styles.comingSoonTag}>
+              <Text style={styles.comingSoonText}>Coming Soon</Text>
+            </View>
+          )}
         </View>
       </View>
+    </View>
+  );
+
+  if (isComingSoon) {
+    return card;
+  }
+
+  return (
+    <TouchableOpacity onPress={() => onPress(course)} activeOpacity={0.88}>
+      {card}
     </TouchableOpacity>
   );
 }
@@ -121,6 +126,11 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
     borderRadius: Radius.full,
   },
+  badgeText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    color: Colors.info,
+  },
   content: {
     flex: 1,
     padding: Spacing.md,
@@ -144,20 +154,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
-  priceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+  comingSoonTag: {
+    alignSelf: 'flex-start',
+    marginTop: Spacing.xs,
+    backgroundColor: Colors.infoLight,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: Radius.full,
   },
-  price: {
+  comingSoonText: {
     fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-    // color: '#fff',
-    color: Colors.info,
-  },
-  purchasedText: {
-    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
-    color: Colors.success,
+    color: Colors.info,
   },
 });

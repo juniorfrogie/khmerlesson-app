@@ -8,30 +8,62 @@ import { Text } from '@/src/shared/components/Text';
 import { useQuizzes } from '@/src/services/hooks/useQuizzes';
 import { Quiz } from '@/src/features/quizzes/types';
 
+// MOCK — replace with real quiz result store when backend supports it
+const MOCK_RESULTS: Record<number, { score: number; total: number }> = {
+  1: { score: 8, total: 10 },
+  3: { score: 5, total: 10 },
+};
+
 export default function QuizTab() {
   const router = useRouter();
   const { data: quizzes, loading, error, refetch } = useQuizzes();
 
-  const renderItem = ({ item }: { item: Quiz }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => router.push(`/quiz/${item.id}`)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.cardIcon}>
-        <Ionicons name="barbell-outline" size={28} color={Colors.primary} />
-      </View>
-      <View style={styles.cardBody}>
-        <Text variant="body" color={Colors.text.primary} weight="semibold" numberOfLines={1}>
-          {item.title}
-        </Text>
-        <Text variant="caption" color={Colors.text.secondary} numberOfLines={2}>
-          {item.description}
-        </Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color={Colors.text.muted} />
-    </TouchableOpacity>
-  );
+  const renderItem = ({ item }: { item: Quiz }) => {
+    const result = MOCK_RESULTS[item.id];
+    const isCompleted = !!result;
+    const scorePercent = result ? result.score / result.total : 0;
+    const scoreTint = scorePercent >= 0.8 ? Colors.successDark : scorePercent >= 0.6 ? Colors.warning : Colors.error;
+
+    return (
+      <TouchableOpacity
+        style={[styles.card, isCompleted && styles.cardCompleted]}
+        onPress={() => router.push(`/quiz/${item.id}`)}
+        activeOpacity={0.7}
+      >
+        <View style={[styles.cardIcon, isCompleted && styles.cardIconDone]}>
+          <Ionicons
+            name={isCompleted ? 'checkmark-circle' : 'barbell-outline'}
+            size={28}
+            color={isCompleted ? Colors.successDark : Colors.primary}
+          />
+        </View>
+        <View style={styles.cardBody}>
+          <View style={styles.cardTitleRow}>
+            <Text variant="body" color={Colors.text.primary} weight="semibold" numberOfLines={1} style={styles.cardTitle}>
+              {item.title}
+            </Text>
+            {isCompleted && (
+              <View style={styles.completedBadge}>
+                <Text variant="caption" color={Colors.successDark} weight="semibold">Done</Text>
+              </View>
+            )}
+          </View>
+          <Text variant="caption" color={Colors.text.secondary} numberOfLines={2}>
+            {item.description}
+          </Text>
+          {isCompleted && (
+            <View style={styles.scoreRow}>
+              {/* <Ionicons name="star" size={12} color={scoreTint} /> */}
+              <Text variant="caption" color={scoreTint} weight="semibold">
+                90% correct
+              </Text>
+            </View>
+          )}
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={Colors.text.muted} />
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>

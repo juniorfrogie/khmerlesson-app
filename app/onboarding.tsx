@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   View,
   FlatList,
+  ScrollView,
   StyleSheet,
   Dimensions,
   TouchableOpacity,
@@ -37,9 +38,9 @@ const SLIDES: Slide[] = [
     icon: 'book-outline',
     iconColor: Colors.primary,
     iconBg: Colors.primaryMuted,
-    title: 'Welcome to KhmerLesson',
-    titleKhmer: 'សូមស្វាគមន៍មកកាន់ KhmerLesson',
-    body: 'Learn Khmer vocabulary at your own pace with beautifully designed lessons and flashcards.',
+    title: 'Welcome to KhmerLessons',
+    titleKhmer: 'សូមស្វាគមន៍មកកាន់ KhmerLessons',
+    body: 'We are pleased to introduce our app – the perfect training tool for beginners and advanced learners. Anywhere and anytime, you can learn to read and listen to Khmer in a fun way, whether on the train, before going to sleep, or during a quiz break.\n\nThe app is an ideal supplement to the textbook series and online language courses available on KhmerLessons.com. As a co-developer and long-time student, I use it daily, and the progress achieved in combination with the online lessons is impressively fast.\n\nAdditional courses are already in preparation. We are always open to questions and suggestions for improvement.\n\nGood luck and have fun!',
   },
   {
     id: '2',
@@ -215,31 +216,35 @@ export default function OnboardingScreen() {
 }
 
 function SlideItem({ slide }: { slide: Slide }) {
+  const isFirst = slide.id === '1';
   return (
     <View style={styles.slide}>
-      <View style={[styles.iconWrap, { backgroundColor: slide.iconBg }]}>
-        <Ionicons name={slide.icon} size={64} color={slide.iconColor} />
-      </View>
-      <Text
-        variant="title"
-        style={styles.title}
+      <ScrollView
+        contentContainerStyle={styles.slideContent}
+        showsVerticalScrollIndicator={false}
+        nestedScrollEnabled
       >
-        {slide.title}
-      </Text>
-      <Text
-        variant="caption"
-        color={Colors.text.secondary}
-        style={styles.khmer}
-      >
-        {slide.titleKhmer}
-      </Text>
-      <Text
-        variant="body"
-        color={Colors.text.secondary}
-        style={styles.body}
-      >
-        {slide.body}
-      </Text>
+        <View style={[styles.iconWrap, isFirst && styles.iconWrapSmall, { backgroundColor: slide.iconBg }]}>
+          <Ionicons name={slide.icon} size={isFirst ? 44 : 64} color={slide.iconColor} />
+        </View>
+        <Text variant="title" style={styles.title}>
+          {slide.title}
+        </Text>
+        <Text
+          variant="caption"
+          color={Colors.text.secondary}
+          style={styles.khmer}
+        >
+          {slide.titleKhmer}
+        </Text>
+        <Text
+          variant="body"
+          color={Colors.text.secondary}
+          style={styles.body}
+        >
+          {slide.body}
+        </Text>
+      </ScrollView>
     </View>
   );
 }
@@ -280,9 +285,13 @@ const styles = StyleSheet.create({
   slide: {
     width,
     flex: 1,
+  },
+  slideContent: {
+    flexGrow: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
     gap: Spacing.md,
   },
   iconWrap: {
@@ -292,6 +301,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing.lg,
+  },
+  iconWrapSmall: {
+    width: 96,
+    height: 96,
+    marginBottom: Spacing.sm,
   },
   title: {
     textAlign: 'center',

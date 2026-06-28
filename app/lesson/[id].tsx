@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Animated, ActivityIndicator, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
+import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import { Ionicons } from '@expo/vector-icons';
 import { friendlyError } from '@/src/shared/utils/error';
@@ -28,7 +29,7 @@ export default function LessonScreen() {
   const router = useRouter();
   const lessonId = id ? Number(id) : null;
   const courseId = courseIdParam ? Number(courseIdParam) : null;
-  const { lesson, loading, error, forbidden, refetch } = useLessonDetail(lessonId);
+  const { lesson, loading, error, forbidden, forbiddenReason, refetch } = useLessonDetail(lessonId);
 
   const [currentIndex, setCurrentIndex] = useState(0);
   const opacity = useRef(new Animated.Value(1)).current;
@@ -41,6 +42,14 @@ export default function LessonScreen() {
   const [speakingIndex, setSpeakingIndex] = useState<number | null>(null);
   const { width } = useWindowDimensions();
   const { quiz: lessonQuiz } = useQuizByLesson(lessonId);
+
+  // Redirect to login when the token expired mid-session
+  useEffect(() => {
+    if (forbiddenReason === 'tokenExpired') {
+      useAuthStore.getState().signOut();
+      router.replace('/auth/login');
+    }
+  }, [forbiddenReason, router]);
 
   useEffect(() => {
     stopTTS();
@@ -129,12 +138,23 @@ export default function LessonScreen() {
           </View>
         )}
 
-        {forbidden && (
+        {forbidden && forbiddenReason !== 'tokenExpired' && (
           <View style={styles.center}>
-            <Ionicons name="lock-closed-outline" size={48} color={Colors.text.muted} />
+            <Ionicons
+              name={forbiddenReason === 'comingSoon' ? 'time-outline' : 'lock-closed-outline'}
+              size={48}
+              color={Colors.text.muted}
+            />
             <Text variant="body" color={Colors.text.secondary} style={styles.centered}>
-              This lesson is available for premium users only.
+              {forbiddenReason === 'comingSoon'
+                ? 'This lesson is coming soon.'
+                : 'A subscription is required to access this lesson.'}
             </Text>
+            {forbiddenReason === 'subscription' && (
+              <TouchableOpacity style={styles.subscribeBtn} onPress={() => router.push('/subscription' as any)}>
+                <Text variant="label" color={Colors.text.inverse} weight="semibold">Subscribe</Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
               <Ionicons name="arrow-back" size={18} color={Colors.text.secondary} />
               <Text variant="body" color={Colors.text.secondary}>Go back</Text>
@@ -368,6 +388,12 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Colors.primary,
+  },
+  subscribeBtn: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.primary,
   },
   quizBanner: {
     flexDirection: 'row',

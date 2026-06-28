@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { View, StyleSheet, TouchableOpacity, Animated, ActivityIndicator, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
@@ -7,6 +7,7 @@ import { Colors, Spacing, Radius, Shadow, FontSize } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { ProgressBar } from '@/src/shared/components/ProgressBar';
 import { useQuizDetail } from '@/src/services/hooks/useQuizDetail';
+import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
 
 export default function QuizScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -18,12 +19,43 @@ export default function QuizScreen() {
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [correctCount, setCorrectCount] = useState(0);
   const [showResult, setShowResult] = useState(false);
+  const [speakingQuestion, setSpeakingQuestion] = useState(false);
   const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    stopTTS();
+    setSpeakingQuestion(false);
+  }, [currentIndex]);
+
+  useEffect(() => {
+    return () => stopTTS();
+  }, []);
 
   const questions = quiz?.questions ?? [];
   const total = questions.length;
   const question = questions[currentIndex];
   const isLast = currentIndex === total - 1;
+
+  const speakQuestion = async () => {
+    if (!question) return;
+    if (speakingQuestion) {
+      stopTTS();
+      setSpeakingQuestion(false);
+      return;
+    }
+    setSpeakingQuestion(true);
+    try {
+      const player = await playTTS(question.question);
+      player.addListener('playbackStatusUpdate', (status) => {
+        if (status.didJustFinish) {
+          setSpeakingQuestion(false);
+          player.remove();
+        }
+      });
+    } catch {
+      setSpeakingQuestion(false);
+    }
+  };
 
   const handleSelect = (option: string) => {
     if (selectedOption) return;
@@ -144,10 +176,23 @@ export default function QuizScreen() {
                 contentContainerStyle={styles.cardContent}
                 showsVerticalScrollIndicator={false}
               >
-                <View style={styles.stepPill}>
-                  <Text variant="label" color={Colors.primary}>
-                    Question {String(currentIndex + 1).padStart(2, '0')}
-                  </Text>
+                <View style={styles.questionHeader}>
+                  <View style={styles.stepPill}>
+                    <Text variant="label" color={Colors.primary}>
+                      Question {String(currentIndex + 1).padStart(2, '0')}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={speakQuestion}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={styles.ttsBtn}
+                  >
+                    <Ionicons
+                      name={speakingQuestion ? 'volume-high' : 'volume-high-outline'}
+                      size={20}
+                      color={speakingQuestion ? Colors.primaryLight : Colors.primary}
+                    />
+                  </TouchableOpacity>
                 </View>
                 <Text
                   variant="subtitle"
@@ -251,6 +296,11 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.lg,
     gap: Spacing.md,
   },
+  questionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
   stepPill: {
     alignSelf: 'flex-start',
     backgroundColor: Colors.primaryMuted,
@@ -258,8 +308,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.xs,
   },
+  ttsBtn: {
+    padding: Spacing.xs,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.primaryMuted,
+  },
   questionText: {
-    paddingTop: Spacing.md,
+    paddingTop: Spacing.sm,
     lineHeight: FontSize.lg * 1.6,
   },
   divider: { height: 1, backgroundColor: Colors.borderLight },

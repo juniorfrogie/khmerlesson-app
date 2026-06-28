@@ -3,21 +3,28 @@ import { apiFetch } from '../api';
 import type { Course } from '@/src/features/courses/types';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 
-// Raw shape returned by GET /api/v1/main-lessons
+// Raw shape returned by GET /api/v1/main-lessons.
+// hasAccess and comingSoon are optional: new API fields that may not exist
+// on older backend versions. mapCourse supplies safe fallbacks.
 interface ApiCourse {
   id: number;
   title: string;
   description: string;
   thumbnailUrl: string;
   isFree: boolean;
-  price?: number;
-  productId?: string;
-  hasPurchased?: boolean;
+  hasAccess?: boolean;
+  comingSoon?: boolean;
   lessonCount?: number;
+  order?: number;
 }
 
 function mapCourse(raw: ApiCourse): Course {
-  return { ...raw };
+  return {
+    ...raw,
+    // Free courses are always accessible regardless of what hasAccess says
+    hasAccess: raw.isFree || (raw.hasAccess ?? false),
+    comingSoon: raw.comingSoon ?? false,
+  };
 }
 
 interface State {

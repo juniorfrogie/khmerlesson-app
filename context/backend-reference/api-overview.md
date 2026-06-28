@@ -21,9 +21,10 @@
 - GET /api/v1/stats - Get platform statistics
 - GET /api/v1/search - Search lessons and quizzes
 
-## Purchase/In-App Purchase APIs
-- POST /api/v1/purchase-history - Record purchase history
-- POST /api/v1/verify-purchase - Verify in-app purchases
+## Subscription APIs
+- GET /api/v1/subscription-plans - List all active plans (public, no auth)
+- POST /api/v1/subscriptions - Register/renew subscription with Apple JWS token (auth required); body: { jws: string }
+- GET /api/v1/subscriptions/me - Get current user's active/trial subscription or null (auth required)
 
 ## User Profile APIs (Require Authentication)
 - GET /api/me - Get current user profile information

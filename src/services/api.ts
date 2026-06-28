@@ -17,7 +17,17 @@ export async function apiFetch<T>(path: string, accessToken?: string): Promise<T
   });
 
   if (!res.ok) {
-    const err = new Error(`API ${res.status}: ${path}`);
+    const text = await res.text().catch(() => '');
+    let message = `API ${res.status}: ${path}`;
+    let code: string | undefined;
+    try {
+      const json = JSON.parse(text);
+      if (json?.message) message = json.message;
+      if (json?.error) message = json.error;
+      if (json?.code) code = json.code;
+    } catch { /* ignore */ }
+    const err = new Error(message);
+    if (code) (err as Error & { code: string }).code = code;
     (err as Error & { status: number }).status = res.status;
     throw err;
   }

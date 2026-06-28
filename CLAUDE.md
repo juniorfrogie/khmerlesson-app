@@ -18,53 +18,72 @@ npx expo lint            # ESLint
 npx tsc --noEmit         # Type-check without building
 ```
 
+After completing any unit: confirm `npx tsc --noEmit` passes and update `context/progress-tracker.md`.
+
 ## Folder Structure
 
 ```
 app/                          # Expo Router file-based routes
-  index.tsx                   # Entry — hydrates auth, routes to onboarding/login/tabs
+  index.tsx                   # Entry — hydrates auth + progress + subscription, routes to onboarding/login/tabs
   onboarding.tsx              # 3-slide intro; routes to /auth/login when done
   auth/login.tsx              # Google + Apple + Guest sign-in
   (tabs)/
     index.tsx                 # Home — continue learning + all courses
     explore.tsx               # Browse with level filter chips (hidden from tab bar)
+    quiz.tsx                  # Quiz tab
     me.tsx                    # Profile — auth-guarded, shows user info + log out
   course/[id].tsx             # Course detail + lesson list
-  course/purchase.tsx         # IAP purchase modal
   lesson/[id].tsx             # Lesson detail (sections + vocab)
+  quiz/[id].tsx               # One-question-at-a-time quiz screen + result screen
+  subscription/index.tsx      # Paywall — loads plans, triggers StoreKit purchase
   _layout.tsx                 # Root stack + status bar
 
 src/
   shared/
     theme/index.ts            # Single source for all design tokens
     components/               # Text, Button, Badge, ProgressBar
-    utils/image.ts            # Image URI helpers
+    utils/
+      image.ts                # Image URI helpers
+      error.ts                # Shared error utilities
+      vocabParser.js          # Vocabulary parsing helpers
   features/
     auth/
       types.ts                # User, AuthTokens, AuthState, AuthProvider
-      store/authStore.ts      # Zustand auth store (persists to AsyncStorage)
+      store/authStore.ts      # Zustand auth store (persists to AsyncStorage key `auth_state`)
       service.ts              # signInWithGoogle, signInWithApple
     courses/
       types.ts                # Course interface
       components/CourseCard.tsx
-      service/purchaseService.ts
+      service/purchaseService.ts  # react-native-iap subscription wrapper
     lessons/
       types.ts                # Lesson, LessonDetail, LessonSection, LessonLevel, VocabItem
       components/LessonRow.tsx
+      service/ttsService.ts   # TTS via backend proxy + expo-audio
+      store/progressStore.ts  # Zustand progress store (persists to AsyncStorage key `lesson_progress`)
+    quizzes/
+      types.ts                # Quiz, QuizDetail, Question
+    subscriptions/
+      types.ts                # SubscriptionPlan, Subscription, SubscriptionStatus
+      store/subscriptionStore.ts  # Zustand store (persists to AsyncStorage key `subscription_state`)
   services/
     api.ts                    # apiFetch, apiPost, apiPostForm, apiDelete + BUCKET_URL
     hooks/
       useCourses.ts           # GET /api/v1/main-lessons
       useCourseLessons.ts     # GET /api/v1/main-lessons/:id/lessons
       useLessonDetail.ts      # GET /api/v1/lessons/:id
+      useQuizzes.ts           # GET /api/v1/quizzes
+      useQuizDetail.ts        # GET /api/v1/quizzes/:id
+      useQuizByLesson.ts      # GET /api/v1/quizzes?lessonId=:id
+      useSubscriptionPlans.ts # GET /api/v1/subscription-plans (public)
+      useMySubscription.ts    # GET /api/v1/subscriptions/me (auth-required)
 
 context/                      # Living project spec — read before implementing
   backend-reference/
     api-overview.md           # Full API endpoint list
+    api-update-01.md          # Subscription model migration notes
     mobile-data-models.md     # Authoritative type shapes from backend
   feature-specs/              # Numbered spec files — work in order
-  mock-data/                  # Khmer mock content used until API/SQLite is ready
-  progress-tracker.md
+  progress-tracker.md         # Read at the start of every session
   architecture.md
   ai-workflow-rules.md
   code-standards.md
@@ -76,7 +95,7 @@ context/                      # Living project spec — read before implementing
 
 ## Environment
 
-Copy `.env.example` → `.env` and fill in values. `.env` is gitignored.
+Copy `.env.example` → `.env` (gitignored):
 
 ```
 EXPO_PUBLIC_API_BASE_URL=http://localhost:5001
@@ -84,7 +103,7 @@ EXPO_PUBLIC_API_KEY=...
 EXPO_PUBLIC_BUCKET_URL=http://localhost:5001/uploads
 ```
 
-Variables are read in `src/services/api.ts`. `BUCKET_URL` is used to resolve `imageCover` paths from the API into full image URIs.
+`BUCKET_URL` is used in `src/services/api.ts` to resolve image paths from the API into full image URIs.
 
 ## API Layer
 
@@ -92,12 +111,14 @@ Variables are read in `src/services/api.ts`. `BUCKET_URL` is used to resolve `im
 
 | Function | Method | Notes |
 |---|---|---|
-| `apiFetch<T>(path, token?)` | GET | Unwraps `{ data: ... }` envelope or raw response |
-| `apiPost<T>(path, body, token?)` | POST | JSON body |
-| `apiPostForm<T>(path, body, token?)` | POST | `application/x-www-form-urlencoded` — used by auth endpoints to match the Flutter reference |
+| `apiFetch<T>(path, token?)` | GET | Unwraps `{ data: ... }` envelope or raw response; attaches `code` and `status` to thrown errors |
+| `apiPost<T>(path, body, token?)` | POST | JSON body; attaches `code`, `status`, `responseBody` to thrown errors |
+| `apiPostForm<T>(path, body, token?)` | POST | `application/x-www-form-urlencoded`; if non-2xx response still contains a `token`, treats it as success (backend "user already exists" quirk) |
 | `apiDelete(path, token?)` | DELETE | Returns void |
 
-All throw on non-2xx. All data-fetching hooks return `{ data, loading, error }` — screens must render all three states.
+All throw on non-2xx (with the `apiPostForm` exception above). All data-fetching hooks return `{ data, loading, error }` — screens must render all three states.
+
+`useCourseLessons` and `useLessonDetail` also return `{ forbidden: boolean, forbiddenReason: 'tokenExpired' | 'subscription' | 'comingSoon' | null }` for access-control errors. Screens should redirect to `/auth/login` on `tokenExpired` and to `/subscription` on `subscription`.
 
 When adding a new endpoint:
 1. Check `context/backend-reference/api-overview.md` for the route
@@ -108,7 +129,7 @@ When adding a new endpoint:
 
 Auth state lives in `src/features/auth/store/authStore.ts` (Zustand, persisted to AsyncStorage key `auth_state`). Methods: `setAuth`, `setGuest`, `signOut`, `hydrate`, `refreshTokens`.
 
-`app/index.tsx` calls `hydrate()` on mount, then routes to onboarding / login / tabs.
+`app/index.tsx` calls `hydrate()` from auth, progress, and subscription stores in parallel on mount, then routes to onboarding / login / tabs.
 
 `src/features/auth/service.ts` contains `signInWithApple` and `signInWithGoogle`:
 - **Apple**: 2 API calls — `POST /api/auth/verify-apple-id-token` then `POST /api/auth/register-auth-service` (form-encoded, `registrationType: "apple_service"`)
@@ -116,24 +137,31 @@ Auth state lives in `src/features/auth/store/authStore.ts` (Zustand, persisted t
 
 Both silently ignore cancel/dismiss; other errors surface inline.
 
+## Subscription & Course Access
+
+The app uses a subscription model (not per-course purchases). `src/features/subscriptions/store/subscriptionStore.ts` holds `mySubscription: Subscription | null`.
+
+`Course` access is determined by three fields from the API:
+- `isFree: boolean` — no login or subscription needed
+- `hasAccess: boolean` — user can open (free OR plan includes it)
+- `comingSoon: boolean` — visible but not openable
+
+UI logic:
+```
+if comingSoon  → lock icon + "Coming Soon", non-tappable
+if hasAccess   → open normally
+else           → lock icon + "Subscribe" → navigate to /subscription
+```
+
 ## In-App Purchases
 
-`src/features/courses/service/purchaseService.ts` wraps `react-native-iap`. The IAP module is loaded via deferred `require()` so the file loads safely in Expo Go (NitroModules only work in native builds). Calls in Expo Go throw `IAP_NOT_AVAILABLE` and the purchase modal should handle this.
+`src/features/courses/service/purchaseService.ts` wraps `react-native-iap`. The IAP module is loaded via deferred `require()` so the file loads safely in Expo Go (NitroModules only work in native builds). Calls in Expo Go throw `IAP_NOT_AVAILABLE` — the subscription screen handles this with a friendly message.
 
-Purchase flow: `connectIAP` → `loadCourseProduct` (tries in-app, falls back to subscription) → `purchaseCourse` → records to `POST /api/v1/purchase-history` → `finishTransaction`.
+Purchase flow: `connectIAP` → `loadSubscriptionProduct(productIdIos)` → `purchaseSubscription(planProductId, token)` → `POST /api/v1/subscriptions` with `{ jws: transactionReceipt }` → writes result to `subscriptionStore` → `finishTransaction`.
 
-## Architecture: Data Flow
+## TTS
 
-```
-API → service hooks → Zustand store → UI
-```
-
-Planned (not yet built):
-```
-API → sync service → SQLite → Zustand → UI
-```
-
-Offline strategy: free lessons cached locally; premium lessons cached after purchase and require re-validation annually.
+`src/features/lessons/service/ttsService.ts` proxies TTS through the backend (`GET /api/tts?q=<text>`) and plays the audio stream via `expo-audio`. Exports `playTTS(text)` and `stopTTS()`. Khmer language is hardcoded server-side — no language param needed.
 
 ## Design Tokens
 
@@ -163,15 +191,14 @@ Icons: **Ionicons** from `@expo/vector-icons` only.
 
 All `Text` variant `lineHeight` values are ~1.6× `fontSize` to prevent Khmer stacked-glyph clipping. For any custom `fontSize` override, apply the same ratio. Never set `lineHeight` below 1.5× for text that may contain Khmer script.
 
-Audio (`expo-av`) and text-to-speech (`expo-speech`) packages are installed for future lesson audio playback.
-
 ## Data Types
 
 ```typescript
 // src/features/courses/types.ts
 interface Course {
   id: number; title: string; description: string;
-  imageCover: string; free: boolean; price?: number;
+  thumbnailUrl: string; isFree: boolean; hasAccess: boolean;
+  comingSoon: boolean; lessonCount?: number; order?: number;
 }
 
 // src/features/lessons/types.ts
@@ -180,6 +207,16 @@ interface Lesson { id: number; title: string; description: string; level: Lesson
 interface LessonDetail extends Lesson { sections: LessonSection[]; }
 interface LessonSection { title: string; content: string; }
 interface VocabItem { word: string; pronunciation: string; meaning: string; }
+
+// src/features/quizzes/types.ts
+interface Quiz { id: number; title: string; description: string; lessonId: number; }
+interface Question { id: number; question: string; options: string[]; correctAnswer: string; }
+interface QuizDetail extends Quiz { questions: Question[]; }
+
+// src/features/subscriptions/types.ts
+type SubscriptionStatus = 'trial' | 'active' | 'expired' | 'cancelled';
+interface SubscriptionPlan { id: number; name: string; price: number; /* cents */ productIdIos: string; description: string; isActive: boolean; }
+interface Subscription { id: number; userId: number; planId: number; status: SubscriptionStatus; currentPeriodEndsAt: string; }
 
 // src/features/auth/types.ts
 type AuthProvider = 'google' | 'apple' | 'email';

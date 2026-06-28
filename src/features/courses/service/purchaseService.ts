@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { apiPost } from '@/src/services/api';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
+import type { Subscription } from '@/src/features/subscriptions/types';
 
 export const IAP_NOT_AVAILABLE = 'IAP_NOT_AVAILABLE';
 
@@ -21,7 +22,6 @@ export async function connectIAP(): Promise<void> {
   try {
     await iap.initConnection();
   } catch {
-    // initConnection throws in Expo Go because NitroModules aren't available
     throw new Error(IAP_NOT_AVAILABLE);
   }
 }
@@ -35,82 +35,33 @@ export async function disconnectIAP(): Promise<void> {
   }
 }
 
-export interface CourseProduct {
+export interface SubscriptionProduct {
   displayPrice: string;
-  isSubscription: boolean;
 }
 
-// SKUs containing these tokens are subscriptions regardless of store lookup result
-const SUBSCRIPTION_KEYWORDS = ['yearly', 'monthly', 'weekly', 'annual', 'subscription'];
-
-export function isSubscriptionProductId(productId: string): boolean {
-  const lower = productId.toLowerCase();
-  return SUBSCRIPTION_KEYWORDS.some(kw => lower.includes(kw));
-}
-
-export async function loadCourseProduct(
-  productId: string,
-): Promise<CourseProduct | null> {
+export async function loadSubscriptionProduct(
+  productIdIos: string,
+): Promise<SubscriptionProduct | null> {
   const iap = getIAP();
-
-  // Try non-consumable / one-time IAPs first. SKU naming (e.g. "yearly") is not
-  // a reliable signal — a non-consumable yearly-access product would be misclassified.
   try {
-    const iapResult = await iap.fetchProducts({ skus: [productId], type: 'in-app' });
-    // v15 may return a single object instead of an array
-    const iapProducts = Array.isArray(iapResult) ? iapResult : iapResult ? [iapResult] : [];
-    if (iapProducts[0]) {
-      return { displayPrice: iapProducts[0].displayPrice, isSubscription: false };
-    }
-  } catch (e) {
-    console.log('[IAP] fetchProducts (in-app) error:', e);
-  }
-
-  // v15 drops the connection after fetchProducts — reinitialize before the subs fallback.
-  try { await iap.initConnection(); } catch { /* ignore */ }
-
-  // Fall back to auto-renewable subscription lookup.
-  try {
-    const subResult = await iap.fetchProducts({ skus: [productId], type: 'subs' });
-    const subs = Array.isArray(subResult) ? subResult : subResult ? [subResult] : [];
-    if (subs[0]) {
-      return { displayPrice: subs[0].displayPrice, isSubscription: true };
+    const result = await iap.fetchProducts({ skus: [productIdIos], type: 'subs' });
+    const products = Array.isArray(result) ? result : result ? [result] : [];
+    if (products[0]) {
+      return { displayPrice: products[0].displayPrice };
     }
   } catch (e) {
     console.log('[IAP] fetchProducts (subs) error:', e);
   }
-
   return null;
 }
 
-export interface PurchaseCourseParams {
-  courseId: number;
-  productId: string;
-  isSubscription: boolean;
-  price: number;
-  accessToken: string;
-}
-
-export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
-  const { courseId, productId, isSubscription, price, accessToken } = params;
+export function purchaseSubscription(
+  planProductId: string,
+  accessToken: string,
+): Promise<Subscription> {
   const iap = getIAP();
 
-  console.log('[IAP] purchaseCourse start — productId:', productId, 'isSubscription:', isSubscription);
-  try {
-    const parts = accessToken.split('.');
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
-      const exp = payload.exp ? new Date(payload.exp * 1000).toISOString() : null;
-      const expired = payload.exp ? Date.now() > payload.exp * 1000 : null;
-      console.log('[IAP:TOKEN]', JSON.stringify({ present: true, length: accessToken.length, userId: payload.sub ?? payload.userId ?? payload.id, exp, expired }));
-    } else {
-      console.log('[IAP:TOKEN]', JSON.stringify({ present: !!accessToken, length: accessToken.length, decoded: false }));
-    }
-  } catch {
-    console.log('[IAP:TOKEN]', JSON.stringify({ present: !!accessToken, length: accessToken?.length ?? 0, decoded: false }));
-  }
-
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<Subscription>((resolve, reject) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let purchaseSub: any = null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -132,195 +83,71 @@ export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
 
     let tokenToUse = accessToken;
 
-    const callWithRefresh = async (path: string, payload: object) => {
+    const callWithRefresh = async (jws: string): Promise<Subscription> => {
       try {
-        await apiPost(path, payload, tokenToUse);
+        return await apiPost<Subscription>('/api/v1/subscriptions', { jws }, tokenToUse);
       } catch (err: unknown) {
         if ((err as Error & { code?: string }).code === 'TOKEN_EXPIRED') {
           console.log('[IAP] token expired — refreshing and retrying');
           await useAuthStore.getState().refreshTokens();
           tokenToUse = useAuthStore.getState().tokens?.accessToken ?? '';
-          await apiPost(path, payload, tokenToUse);
-        } else {
-          throw err;
+          return await apiPost<Subscription>('/api/v1/subscriptions', { jws }, tokenToUse);
         }
+        throw err;
       }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function processPurchase(purchase: any) {
-      if (purchase.productId !== productId) {
+      if (purchase.productId !== planProductId) {
         console.log('[IAP] productId mismatch, skipping');
         return;
       }
-      // v15 may fire both the listener and resolve the promise — only process once
       if (processing) {
         console.log('[IAP] already processing, skipping duplicate event');
         return;
       }
       processing = true;
 
-      // ── FULL STOREKIT PURCHASE OBJECT (share with backend team) ──────────────
-      console.log('[IAP:PURCHASE_OBJECT]', JSON.stringify({
-        // identifiers
-        productId:                        purchase.productId,
-        transactionId:                    purchase.transactionId,
-        originalTransactionIdentifierIOS: purchase.originalTransactionIdentifierIOS,
-        // dates
-        transactionDate:                  purchase.transactionDate,
-        // receipts / tokens
-        transactionReceipt:               purchase.transactionReceipt
-                                            ? `<JWS ${purchase.transactionReceipt.length} chars>`
-                                            : null,
-        purchaseToken:                    purchase.purchaseToken,
-        // state
-        transactionStateIOS:              purchase.transactionStateIOS,
-        quantityIOS:                      purchase.quantityIOS,
-        // android fields (null on iOS)
-        isAcknowledgedAndroid:            purchase.isAcknowledgedAndroid,
-        purchaseStateAndroid:             purchase.purchaseStateAndroid,
-        dataAndroid:                      purchase.dataAndroid,
-        signatureAndroid:                 purchase.signatureAndroid,
-        // platform
-        platform: Platform.OS,
-      }, null, 2));
-      // ─────────────────────────────────────────────────────────────────────────
-
       try {
+        // StoreKit 2 JWS is in transactionReceipt; restored purchases use purchaseToken
         const jws = Platform.OS === 'ios'
           ? (purchase.transactionReceipt ?? purchase.purchaseToken ?? null)
-          : null;
-        const receipt = Platform.OS === 'ios' ? jws : (purchase.purchaseToken ?? null);
-        const purchaseDate = purchase.transactionDate
-          ? new Date(purchase.transactionDate).toISOString()
-          : new Date().toISOString();
-        const rawId = purchase.transactionId ?? purchase.id ?? purchase.purchaseToken ?? null;
-        const purchaseId = (!rawId || rawId === '0') ? productId : rawId;
+          : (purchase.purchaseToken ?? null);
 
-        // Extract actual price from JWS. Apple stores price in milliunits (1000 = $1.00).
-        // Divide by 1000 to get major currency units as the backend expects.
-        let purchaseAmount = price;
-        try {
-          if (jws) {
-            const seg = jws.split('.')[1];
-            const padded = seg.replace(/-/g, '+').replace(/_/g, '/') + '=='.slice(0, (4 - seg.length % 4) % 4);
-            // eslint-disable-next-line no-undef
-            const jwsPayload = JSON.parse(atob(padded));
-            if (typeof jwsPayload.price === 'number') {
-              purchaseAmount = jwsPayload.price / 1000; // milliunits → major currency units
-            }
-          }
-        } catch { /* keep fallback */ }
+        console.log('[IAP] processPurchase — jws present:', !!jws, 'productId:', purchase.productId);
 
-        const { user } = useAuthStore.getState();
-        const historyPayload = {
-          userId: user?.id ?? '',
-          mainLessonId: courseId,
-          purchaseId,
-          platformType: Platform.OS,
-          purchaseAmount,
-          purchaseDate,
-          paymentStatus: 'completed',
-          jws,
-          receipt,
-        };
-        console.log('[IAP:HISTORY_PAYLOAD]', JSON.stringify(historyPayload, null, 2));
-        await callWithRefresh('/api/v1/purchase-history', historyPayload);
-        console.log('[IAP] purchase history recorded');
+        if (!jws) throw new Error('No JWS token found in purchase object');
+
+        const subscription = await callWithRefresh(jws);
+        console.log('[IAP] subscription registered — status:', subscription.status);
 
         try {
           await iap.finishTransaction({ purchase, isConsumable: false });
         } catch {
           console.log('[IAP] finishTransaction skipped (already closed)');
         }
-        console.log('[IAP] transaction finished — resolving');
-        settle(() => resolve());
+
+        settle(() => resolve(subscription));
       } catch (err) {
-        const e = err as Error & { code?: string; status?: number; responseBody?: string };
-        console.log('[IAP] error processing purchase — status:', e.status, '| code:', e.code, '| message:', e.message);
-        console.log('[IAP:ERROR_RESPONSE]', e.responseBody ?? '(no body)');
+        const e = err as Error & { code?: string; status?: number };
+        console.log('[IAP] error — status:', e.status, '| code:', e.code, '| message:', e.message);
         settle(() => reject(err));
       }
     }
 
-    // For existing entitlements found in getAvailablePurchases: the original purchase was
-    // already verified — skip re-verification and only record history + finish + resolve.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async function resumeEntitlement(purchase: any) {
-      if (processing) return;
-      processing = true;
-      console.log('[IAP] resuming existing entitlement for:', productId);
-
-      // On iOS, the JWS signed transaction is in purchaseToken (transactionReceipt is null
-      // for restored purchases in react-native-iap v15).
-      const jws = Platform.OS === 'ios'
-        ? (purchase.transactionReceipt ?? purchase.purchaseToken ?? null)
-        : null;
-
-      const purchaseDate = purchase.transactionDate
-        ? new Date(purchase.transactionDate).toISOString()
-        : new Date().toISOString();
-      const rawId = purchase.transactionId || purchase.id || null;
-      const purchaseId = (!rawId || rawId === '0') ? productId : rawId;
-
-      // ── DECODED JWS PAYLOAD (share with backend team) ────────────────────────
-      try {
-        if (jws) {
-          const parts = jws.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(
-              Buffer.from(parts[1], 'base64').toString('utf8'),
-            );
-            console.log('[IAP:JWS_PAYLOAD]', JSON.stringify(payload, null, 2));
-          }
-        }
-      } catch { /* ignore decode errors */ }
-      // ─────────────────────────────────────────────────────────────────────────
-
-      const receipt = Platform.OS === 'ios' ? jws : (purchase.purchaseToken ?? null);
-      const { user } = useAuthStore.getState();
-      const historyPayload = {
-        userId: user?.id ?? '',
-        mainLessonId: courseId,
-        purchaseId,
-        platformType: Platform.OS,
-        purchaseAmount: price,
-        purchaseDate,
-        paymentStatus: 'completed',
-        jws,
-        receipt,
-      };
-
-      try {
-        await callWithRefresh('/api/v1/purchase-history', historyPayload);
-        console.log('[IAP] purchase history recorded');
-      } catch (err) {
-        console.log('[IAP] purchase history failed:', (err as Error).message);
-      }
-
-      try {
-        await iap.finishTransaction({ purchase, isConsumable: false });
-      } catch {
-        console.log('[IAP] finishTransaction skipped (already closed)');
-      }
-
-      settle(() => resolve());
-    }
-
     function startRequestPurchase() {
-      const productType = isSubscription ? 'subs' : 'in-app';
-      console.log('[IAP] calling requestPurchase — type:', productType);
-
+      console.log('[IAP] calling requestPurchase — productId:', planProductId);
       iap.requestPurchase({
         request: {
-          apple: { sku: productId, andDangerouslyFinishTransactionAutomatically: false },
-          google: { skus: [productId] },
+          apple: { sku: planProductId, andDangerouslyFinishTransactionAutomatically: false },
+          google: { skus: [planProductId] },
         },
-        type: productType,
+        type: 'subs',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       }).then((purchase: any) => {
-        // v15: requestPurchase resolves directly with the purchase in addition to firing the listener
         if (purchase?.productId) {
-          console.log('[IAP] requestPurchase promise resolved — productId:', purchase.productId);
+          console.log('[IAP] requestPurchase resolved — productId:', purchase.productId);
           processPurchase(purchase);
         }
       }).catch((err: unknown) => {
@@ -330,15 +157,15 @@ export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
     }
 
     // initConnection FIRST — v15 resets the payment queue observer on connect, which
-    // drops any listeners registered before this call. Set up listeners only after
-    // the connection is live so they are registered on the active observer.
+    // drops any listeners registered before this call.
     iap.initConnection()
       .catch(() => {})
       .then(() => {
         console.log('[IAP] connection ready — registering listeners');
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         purchaseSub = iap.purchaseUpdatedListener((purchase: any) => {
-          console.log('[IAP] purchaseUpdatedListener — purchase.productId:', purchase.productId);
+          console.log('[IAP] purchaseUpdatedListener — productId:', purchase.productId);
           processPurchase(purchase);
         });
 
@@ -357,19 +184,21 @@ export function purchaseCourse(params: PurchaseCourseParams): Promise<void> {
 
         return iap.getAvailablePurchases();
       })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .then((available: any[]) => {
         if (settled) return;
-        console.log('[IAP] getAvailablePurchases — count:', (available ?? []).length, 'skus:', (available ?? []).map((p: any) => p.productId));
-        const existing = (available ?? []).find((p: any) => p.productId === productId);
+        console.log('[IAP] getAvailablePurchases — count:', (available ?? []).length);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const existing = (available ?? []).find((p: any) => p.productId === planProductId);
         if (existing) {
-          console.log('[IAP] found existing entitlement — resuming');
-          resumeEntitlement(existing);
+          console.log('[IAP] found existing entitlement — re-registering with backend');
+          processPurchase(existing);
         } else {
           startRequestPurchase();
         }
       })
       .catch((err: unknown) => {
-        console.log('[IAP] init/getAvailablePurchases error — falling through to requestPurchase:', (err as Error).message);
+        console.log('[IAP] init/getAvailablePurchases error — falling through:', (err as Error).message);
         if (!settled) startRequestPurchase();
       });
   });

@@ -1,7 +1,8 @@
 import { ScrollView, View, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
-import { useState, useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
+import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { Ionicons } from '@expo/vector-icons';
 import { friendlyError } from '@/src/shared/utils/error';
 import { Colors, Spacing, Radius } from '@/src/shared/theme';
@@ -15,32 +16,33 @@ import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import type { Lesson } from '@/src/features/lessons/types';
 
 export default function CourseScreen() {
-  const { id, purchased } = useLocalSearchParams<{ id: string; purchased?: string }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const courseId = id && !isNaN(Number(id)) ? Number(id) : null;
 
   const { courses, refetch } = useCourses();
-  const { lessons, loading, error, forbidden, refetch: refetchLessons } = useCourseLessons(courseId);
+  const { lessons, loading, error, forbidden, forbiddenReason, refetch: refetchLessons } = useCourseLessons(courseId);
   const completedInCourse = useProgressStore(s => s.completedLessons[courseId ?? -1]) ?? [];
 
-  const [purchasedLocally, setPurchasedLocally] = useState(purchased === '1');
-
+  // Always refetch on focus so hasAccess reflects latest state (e.g. after subscribing)
   useFocusEffect(
     useCallback(() => {
-      if (purchased === '1') {
-        setPurchasedLocally(true);
-        refetch();
-        refetchLessons();
-      }
-    }, [purchased, refetch, refetchLessons]),
+      refetch();
+      refetchLessons();
+    }, [refetch, refetchLessons]),
   );
 
-  const baseCourse = courses.find(c => c.id === courseId);
-  const course = baseCourse
-    ? { ...baseCourse, hasPurchased: baseCourse.hasPurchased || purchasedLocally }
-    : null;
+  // Redirect to login when the API tells us the token expired
+  useEffect(() => {
+    if (forbiddenReason === 'tokenExpired') {
+      useAuthStore.getState().signOut();
+      router.replace('/auth/login');
+    }
+  }, [forbiddenReason, router]);
 
-  const isLocked = (course ? !course.isFree && !course.hasPurchased : false) || forbidden;
+  const course = courses.find(c => c.id === courseId) ?? null;
+  const isComingSoon = (course?.comingSoon ?? false) || forbiddenReason === 'comingSoon';
+  const isLocked = (course ? !course.hasAccess && !isComingSoon : false) || (forbidden && !isComingSoon && forbiddenReason !== 'tokenExpired');
 
   const handleLessonPress = (lesson: Lesson) => {
     router.push({
@@ -53,17 +55,9 @@ export default function CourseScreen() {
     });
   };
 
-  const handleUnlock = () => {
-    if (!course) return;
-    router.push({
-      pathname: '/course/purchase',
-      params: {
-        courseId: String(course.id),
-        productId: course.productId ?? '',
-        title: course.title,
-        price: course.price != null ? String(course.price) : '',
-      },
-    });
+  const handleSubscribe = () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    router.push('/subscription' as any);
   };
 
   return (
@@ -71,16 +65,6 @@ export default function CourseScreen() {
       <Stack.Screen options={{ title: course?.title ?? 'Course', headerBackTitle: 'Back' }} />
       <SafeAreaView style={styles.safe} edges={['bottom']}>
         <ScrollView showsVerticalScrollIndicator={false}>
-
-          {/* Success banner */}
-          {purchasedLocally && (
-            <View style={styles.successBanner}>
-              <Ionicons name="checkmark-circle" size={18} color={Colors.successDark} />
-              <Text variant="label" color={Colors.successDark}>
-                Purchase successful! You now have full access.
-              </Text>
-            </View>
-          )}
 
           {/* Hero */}
           <View style={[styles.hero, { backgroundColor: Colors.primary }]}>
@@ -97,20 +81,31 @@ export default function CourseScreen() {
             </Text>
           </View>
 
-          {/* Unlock CTA (shown when locked) */}
-          {isLocked && (
+          {/* Lock / subscribe banner */}
+          {(isLocked || isComingSoon) && (
             <View style={styles.unlockBanner}>
               <View style={styles.unlockBannerText}>
-                <Text variant="subtitle">Unlock this course</Text>
-                {course?.price != null && (
-                  <Text variant="caption" color={Colors.text.secondary}>
-                    One-time purchase · {course.price}
-                  </Text>
+                {isComingSoon ? (
+                  <>
+                    <Text variant="subtitle">Coming Soon</Text>
+                    <Text variant="caption" color={Colors.text.secondary}>
+                      This course is not yet available
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text variant="subtitle">Subscribe to access</Text>
+                    <Text variant="caption" color={Colors.text.secondary}>
+                      A subscription gives access to all premium courses
+                    </Text>
+                  </>
                 )}
               </View>
-              <Button variant="primary" size="md" onPress={handleUnlock}>
-                Unlock
-              </Button>
+              {!isComingSoon && (
+                <Button variant="primary" size="md" onPress={handleSubscribe}>
+                  Subscribe
+                </Button>
+              )}
             </View>
           )}
 
@@ -118,10 +113,16 @@ export default function CourseScreen() {
           <View style={styles.lessonCard}>
             <View style={styles.lessonCardHeader}>
               <Text variant="subtitle">Lessons</Text>
-              {isLocked && (
+              {(isLocked || isComingSoon) && (
                 <View style={styles.lockedTag}>
-                  <Ionicons name="lock-closed" size={12} color={Colors.text.muted} />
-                  <Text variant="label" color={Colors.text.muted}>Locked</Text>
+                  <Ionicons
+                    name={isComingSoon ? 'time-outline' : 'lock-closed'}
+                    size={12}
+                    color={Colors.text.muted}
+                  />
+                  <Text variant="label" color={Colors.text.muted}>
+                    {isComingSoon ? 'Coming Soon' : 'Locked'}
+                  </Text>
                 </View>
               )}
             </View>
@@ -149,7 +150,7 @@ export default function CourseScreen() {
               );
             })()}
 
-            {!loading && !error && lessons.length === 0 && (
+            {!loading && !error && !forbidden && lessons.length === 0 && (
               <View style={styles.message}>
                 <Text variant="caption" color={Colors.text.muted}>No lessons available yet.</Text>
               </View>
@@ -159,21 +160,29 @@ export default function CourseScreen() {
               <LessonRow
                 key={lesson.id}
                 lesson={lesson}
-                onPress={isLocked ? () => { } : handleLessonPress}
+                onPress={(isLocked || isComingSoon) ? () => {} : handleLessonPress}
                 completed={completedInCourse.includes(lesson.id)}
               />
             ))}
 
-            {/* Locked overlay CTA */}
-            {!loading && !error && lessons.length > 0 && isLocked && (
+            {/* Locked / coming soon overlay */}
+            {!loading && (isLocked || isComingSoon) && (
               <View style={styles.lockedOverlay}>
-                <Ionicons name="lock-closed-outline" size={28} color={Colors.text.muted} />
+                <Ionicons
+                  name={isComingSoon ? 'time-outline' : 'lock-closed-outline'}
+                  size={28}
+                  color={Colors.text.muted}
+                />
                 <Text variant="body" color={Colors.text.secondary} style={styles.lockedOverlayText}>
-                  Purchase this course to access all lessons
+                  {isComingSoon
+                    ? 'This course will be available soon'
+                    : 'Subscribe to access all lessons'}
                 </Text>
-                <Button variant="primary" size="md" onPress={handleUnlock}>
-                  Unlock Course
-                </Button>
+                {!isComingSoon && (
+                  <Button variant="primary" size="md" onPress={handleSubscribe}>
+                    Subscribe
+                  </Button>
+                )}
               </View>
             )}
           </View>
@@ -188,16 +197,6 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: Colors.surface,
-  },
-  successBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.successLight,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.success,
   },
   hero: {
     padding: Spacing.lg,

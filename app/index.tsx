@@ -6,6 +6,7 @@ import { Colors } from '@/src/shared/theme';
 import { ONBOARDING_COMPLETE_KEY } from './onboarding';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useProgressStore } from '@/src/features/lessons/store/progressStore';
+import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 
 export default function Index() {
   const router = useRouter();
@@ -13,7 +14,11 @@ export default function Index() {
 
   useEffect(() => {
     (async () => {
-      await Promise.all([hydrate(), useProgressStore.getState().hydrate()]);
+      await Promise.all([
+        hydrate(),
+        useProgressStore.getState().hydrate(),
+        useSubscriptionStore.getState().hydrate(),
+      ]);
       const onboardingDone = await AsyncStorage.getItem(ONBOARDING_COMPLETE_KEY);
 
       if (!onboardingDone) {
