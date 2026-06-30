@@ -98,9 +98,15 @@ export function purchaseSubscription(
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const isKhmerSubscription = (productId: string) =>
+      productId?.startsWith('com.khmerlesson.subscription.');
+
     async function processPurchase(purchase: any) {
       if (purchase.productId !== planProductId) {
-        console.log('[IAP] productId mismatch, skipping');
+        // Finish and skip — either unrelated product or a replayed old-plan transaction.
+        // We only register the plan the user explicitly selected.
+        console.log('[IAP] skipping non-matching productId, finishing:', purchase.productId);
+        try { await iap.finishTransaction({ purchase, isConsumable: false }); } catch {}
         return;
       }
       if (processing) {
@@ -120,7 +126,7 @@ export function purchaseSubscription(
         if (!jws) throw new Error('No JWS token found in purchase object');
 
         const subscription = await callWithRefresh(jws);
-        console.log('[IAP] subscription registered — status:', subscription.status);
+        console.log('[IAP] subscription registered —', JSON.stringify(subscription));
 
         try {
           await iap.finishTransaction({ purchase, isConsumable: false });
@@ -185,13 +191,29 @@ export function purchaseSubscription(
         return iap.getAvailablePurchases();
       })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .then((available: any[]) => {
+      .then(async (available: any[]) => {
         if (settled) return;
         console.log('[IAP] getAvailablePurchases — count:', (available ?? []).length);
+        (available ?? []).forEach((p: any) =>
+          console.log('[IAP] available:', p.productId, '| transactionId:', p.transactionId),
+        );
+        // Finish any stale transactions for other plans so they stop replaying.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const others = (available ?? []).filter((p: any) => p.productId !== planProductId && isKhmerSubscription(p.productId));
+        for (const stale of others) {
+          try {
+            console.log('[IAP] finishing stale plan transaction:', stale.productId);
+            await iap.finishTransaction({ purchase: stale, isConsumable: false });
+          } catch { /* already finished */ }
+        }
+
+        // Re-register only the requested plan if it already has an entitlement
+        // (e.g. purchase completed but backend registration was interrupted).
+        // If no matching plan found, start a new purchase request.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const existing = (available ?? []).find((p: any) => p.productId === planProductId);
         if (existing) {
-          console.log('[IAP] found existing entitlement — re-registering with backend');
+          console.log('[IAP] found existing entitlement — re-registering with backend:', existing.productId);
           processPurchase(existing);
         } else {
           startRequestPurchase();

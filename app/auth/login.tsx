@@ -9,7 +9,10 @@ import * as AuthSession from 'expo-auth-session';
 import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
+import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 import { signInWithApple, signInWithGoogle } from '@/src/features/auth/service';
+import { apiFetch } from '@/src/services/api';
+import type { Subscription } from '@/src/features/subscriptions/types';
 import { Linking } from 'react-native';
 import { Image } from 'expo-image';
 
@@ -25,7 +28,17 @@ const REVERSED_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_REVERSED_IOS_CLIENT_ID;
 export default function LoginScreen() {
   const router = useRouter();
   const { setGuest, setAuth } = useAuthStore();
+  const { setSubscription } = useSubscriptionStore();
   const [loadingProvider, setLoadingProvider] = useState<'google' | 'apple' | null>(null);
+
+  const prefetchSubscription = async (accessToken: string) => {
+    try {
+      const sub = await apiFetch<Subscription | null>('/api/v1/subscriptions/me', accessToken);
+      if (sub) setSubscription(sub);
+    } catch {
+      // non-critical — home screen will still render correctly via useCourses hasAccess
+    }
+  };
   const [error, setError] = useState<string | null>(null);
 
   const [, googleResponse, promptGoogleAsync] = Google.useAuthRequest({
@@ -47,7 +60,7 @@ export default function LoginScreen() {
         return;
       }
       signInWithGoogle(accessToken)
-        .then(({ user, tokens }) => setAuth(user, tokens))
+        .then(({ user, tokens }) => setAuth(user, tokens).then(() => prefetchSubscription(tokens.accessToken)))
         .then(() => router.replace('/(tabs)'))
         .catch((e: unknown) => {
           const msg = (e as { message?: string }).message;
@@ -74,6 +87,7 @@ export default function LoginScreen() {
     try {
       const { user, tokens } = await signInWithApple();
       await setAuth(user, tokens);
+      await prefetchSubscription(tokens.accessToken);
       router.replace('/(tabs)');
     } catch (e: unknown) {
       const err = e as { code?: string | number; message?: string };

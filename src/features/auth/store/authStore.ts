@@ -46,7 +46,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const raw = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
       if (raw) {
         const { user, tokens } = JSON.parse(raw);
+        // Decode the JWT payload to verify which userId is actually in the token
+        try {
+          const payload = JSON.parse(atob(tokens?.accessToken?.split('.')[1] ?? ''));
+          console.log('[hydrate] loading stored session — user.id:', user?.id, '| token.id:', payload?.id, '| token.exp:', new Date((payload?.exp ?? 0) * 1000).toISOString());
+        } catch {
+          console.log('[hydrate] loading stored session — user.id:', user?.id, '| token: (could not decode)');
+        }
         set({ user, tokens, isAuthenticated: true, isGuest: false });
+      } else {
+        console.log('[hydrate] no stored session found');
       }
     } catch {
       // ignore corrupt storage

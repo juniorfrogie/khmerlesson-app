@@ -1,4 +1,4 @@
-import { ScrollView, View, StyleSheet, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { ScrollView, View, StyleSheet, ActivityIndicator, TouchableOpacity, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, Stack, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect } from 'react';
@@ -22,6 +22,7 @@ export default function CourseScreen() {
   const router = useRouter();
   const courseId = id && !isNaN(Number(id)) ? Number(id) : null;
 
+  const isGuest = useAuthStore(s => s.isGuest);
   const { courses, refetch } = useCourses();
   const { lessons, loading, error, forbidden, forbiddenReason, refetch: refetchLessons } = useCourseLessons(courseId);
   const completedInCourse = useProgressStore(s => s.completedLessons[courseId ?? -1]) ?? [];
@@ -37,13 +38,21 @@ export default function CourseScreen() {
     }, [refetch, refetchLessons]),
   );
 
-  // Redirect to login when the API tells us the token expired
+  // Redirect to login when the API tells us the token is missing or expired
   useEffect(() => {
-    if (forbiddenReason === 'tokenExpired') {
+    if (forbiddenReason !== 'tokenExpired') return;
+    if (isGuest) {
+      Alert.alert(
+        'Sign in required',
+        'Please sign in to access this content.',
+        [{ text: 'Sign In', onPress: () => router.replace('/auth/login') }],
+        { cancelable: false },
+      );
+    } else {
       useAuthStore.getState().signOut();
       router.replace('/auth/login');
     }
-  }, [forbiddenReason, router]);
+  }, [forbiddenReason, isGuest, router]);
 
   const course = courses.find(c => c.id === courseId) ?? null;
   const isComingSoon = (course?.comingSoon ?? false) || forbiddenReason === 'comingSoon';

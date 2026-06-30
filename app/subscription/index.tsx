@@ -65,8 +65,24 @@ export default function SubscriptionScreen() {
 
     setPurchasing(true);
     try {
+      try {
+        const payload = JSON.parse(atob(tokens.accessToken.split('.')[1]));
+        console.log('[subscribe] using token — userId in token:', payload?.id, '| store user.id:', user?.id);
+      } catch { /* ignore */ }
       const subscription = await purchaseSubscription(selectedPlan.productIdIos, tokens.accessToken);
       setSubscription(subscription);
+      setPurchasing(false);
+
+      const isExpired = new Date(subscription.currentPeriodEndsAt) < new Date();
+      if (isExpired) {
+        Alert.alert(
+          'Subscription Expired',
+          'Your subscription was found but has expired. Please open Settings → Apple ID → Subscriptions to renew, then come back.',
+          [{ text: 'OK', onPress: () => router.back() }],
+        );
+        return;
+      }
+
       router.back();
     } catch (err) {
       setPurchasing(false);
