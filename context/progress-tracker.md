@@ -8,7 +8,7 @@ Update this file after every meaningful implementation change. If bugs or any su
 
 ## Current Goal
 
-- Subscription model migration (API_CHANGES.md) + Quiz 1 improvements (client request)
+- Phase B complete — Quiz 1 improvements shipped
 
 ## Completed
 
@@ -49,10 +49,15 @@ Update this file after every meaningful implementation change. If bugs or any su
 - **A5** · `app/subscription/index.tsx` — new paywall screen; loads plans via `useSubscriptionPlans`, fetches StoreKit price, calls `purchaseSubscription` on tap, writes result to subscription store, `router.back()` on success; IAP-unavailable warning for Expo Go; `app/course/purchase.tsx` deleted (no longer referenced)
 - **A6** · `CourseCard`: access logic switched to `hasAccess`/`comingSoon`; coming-soon cards non-tappable; price badge removed; "Coming Soon" tag added. `course/[id].tsx`: uses `hasAccess`/`comingSoon`; `handleSubscribe` navigates to `/subscription`; `useFocusEffect` now always refetches on focus; `purchased`/`hasPurchased`/`purchasedLocally` removed
 - **A7** · `apiFetch` now parses error body for `message` and `code`. `useCourseLessons` + `useLessonDetail` expose `forbiddenReason: 'tokenExpired' | 'subscription' | 'comingSoon' | null`. `course/[id].tsx` + `lesson/[id].tsx` redirect to `/auth/login` on `tokenExpired`; lesson screen shows subscribe/coming-soon UI for the respective 403 reason
+- **B1** · Quiz score store at `src/features/quizzes/store/quizScoreStore.ts`; persists to AsyncStorage key `quiz_scores`; keyed by `lessonId` string; methods `setScore`, `getScore`, `hydrate`; hydrated in `app/index.tsx` alongside auth/progress/subscription stores
+- **B2** · Score saved on quiz completion: `quiz/[id].tsx` calls `setScore(quiz.lessonId, correctCount, total)` via `useEffect` when `showResult` becomes true
+- **B3** · Color-coded quiz circle on `LessonRow`: left circle is independently tappable (`onQuizPress`); no score → empty outline ring; has score → filled with 4-band color (error/warning/warningDark/success); completion checkmark shown inside circle in score tint color; `course/[id].tsx` reads `quizScores` from store and passes `quizScore` + `onQuizPress` (→ `/quiz/select`) per row
+- **B4** · Skipped — quiz circle on `LessonRow` navigates directly to the quiz; `course/[id].tsx` uses `useQuizzes` to build a `lessonId → quizId` map; circle is only tappable when a quiz exists for that lesson; "Take the Quiz" banner in `lesson/[id].tsx` navigates directly to `/quiz/[id]`
+- **B5** · TTS speaker button on quiz questions (`quiz/[id].tsx`): toggles `playTTS`/`stopTTS`; icon animates between outline and filled; auto-stops on question change and screen unmount
 
 ## In Progress
 
-- **B1** · Quiz score store (`src/features/quizzes/store/quizScoreStore.ts`)
+- None
 
 ## Next Up — Implementation Plan
 
@@ -60,95 +65,11 @@ Work these in order. Each item is one unit; run `npx tsc --noEmit` and update th
 
 ---
 
-### Phase A — Subscription Model Migration (API_CHANGES.md)
+### Phase A — Subscription Model Migration ✅ Complete
 
-**A1 · Update Course type + data model docs**
-- `src/features/courses/types.ts`: remove `hasPurchased`, `price`, `productId`; add `hasAccess: boolean`, `comingSoon: boolean`, `lessonCount?: number`, `order?: number`. Keep `isFree` (new meaning: free for anyone, no login needed).
-- `context/backend-reference/mobile-data-models.md`: update Course shape to match.
-- `context/backend-reference/api-overview.md`: replace old purchase endpoints with new subscription endpoints.
+### Phase B — Quiz 1 Improvements ✅ Complete
 
-**A2 · Subscription types + store**
-- `src/features/subscriptions/types.ts`: `SubscriptionPlan`, `Subscription` (id, userId, planId, platform, productId, originalTransactionId, status, currentPeriodEndsAt), `SubscriptionStatus = 'trial' | 'active' | 'expired' | 'cancelled'`.
-- `src/features/subscriptions/store/subscriptionStore.ts`: Zustand store (persisted to AsyncStorage); holds `mySubscription: Subscription | null`; methods `setSubscription`, `clearSubscription`; `hydrate()` calls `GET /api/v1/subscriptions/me` (requires token — skip if guest/unauthenticated).
-- Wire `hydrate()` into `app/index.tsx` alongside the existing auth + progress hydration.
-
-**A3 · Subscription API hooks**
-- `src/services/hooks/useSubscriptionPlans.ts` → `GET /api/v1/subscription-plans` (public, no auth). Returns list of `SubscriptionPlan`.
-- `src/services/hooks/useMySubscription.ts` → `GET /api/v1/subscriptions/me` (requires token). Returns `Subscription | null`.
-
-**A4 · Update purchase service for subscription flow**
-- `src/features/courses/service/purchaseService.ts`:
-  - Remove `loadCourseProduct` (per-course product lookup) — replace with `loadSubscriptionProduct(productIdIos: string)` that loads a single subscription SKU.
-  - In purchase completion: instead of `POST /api/v1/purchase-history`, call `POST /api/v1/subscriptions` with `{ jws: purchase.transactionReceipt }` (StoreKit 2 JWS string from `react-native-iap`).
-  - Update `purchaseCourse` → rename to `purchaseSubscription(planProductId: string, token: string)`.
-
-**A5 · New subscription paywall screen**
-- `app/subscription/index.tsx`: replaces `app/course/purchase.tsx` as the paywall entry point.
-- Loads plans via `useSubscriptionPlans`.
-- Shows each plan: name, price (cents → formatted "$X.XX/year"), description.
-- "Subscribe" button triggers `purchaseSubscription(plan.productIdIos, token)`.
-- On success: updates `subscriptionStore`, navigates back and refreshes course list (so `hasAccess` updates).
-- On `IAP_NOT_AVAILABLE` (Expo Go): shows friendly message.
-- On cancel/dismiss: silently closes.
-
-**A6 · Update course access UI**
-- `CourseCard` and/or `app/course/[id].tsx`: replace `hasPurchased`/`price`-based logic with:
-  ```
-  if comingSoon  → show lock icon + "Coming Soon" label, card non-tappable
-  if hasAccess   → normal open behavior
-  else           → show lock icon + "Subscribe" button → navigate to /subscription
-  ```
-- Remove any reference to `price`, `productId`, `hasPurchased` in UI.
-
-**A7 · Handle lesson access errors (401 / 403)**
-- In `useCourseLessons` and `useLessonDetail`, catch API errors by code/message:
-  - `401` + `code: "TOKEN_EXPIRED"` → call `signOut()` + navigate to `/auth/login`.
-  - `403` + message includes `"Active subscription required"` → navigate to `/subscription`.
-  - `403` + message includes `"Content not yet available"` → show inline "Coming Soon" message, don't navigate.
-
----
-
-### Phase B — Quiz 1 Improvements (client request)
-
-**B1 · Quiz score store**
-- `src/features/quizzes/store/quizScoreStore.ts`: Zustand store persisted to AsyncStorage.
-- Shape: `scores: Record<string, { score: number; total: number }>` keyed by `lessonId` (string).
-- Methods: `setScore(lessonId: string, score: number, total: number)`, `getScore(lessonId: string)`.
-- Hydrated on app startup.
-
-**B2 · Save score on quiz completion**
-- `app/quiz/[id].tsx`: on quiz finish, call `quizScoreStore.setScore(lessonId, correctCount, totalQuestions)`.
-- `lessonId` must be passed as a route param when navigating to the quiz (currently the quiz is navigated to by `quizId` — confirm `quizId` → `lessonId` mapping via the quiz detail response or pass `lessonId` explicitly from `lesson/[id].tsx`).
-
-**B3 · Color-coded circle on LessonRow**
-- `src/features/lessons/components/LessonRow.tsx`: left side shows a tappable colored circle.
-- Color logic based on `percentage = score / total * 100`:
-  - No score yet: empty circle (outline, `Colors.border`)
-  - 0–49%: `Colors.error` (red)
-  - 50–74%: `Colors.warning` (orange/yellow)
-  - 75–99%: `Colors.warningLight` or a distinct amber — confirm against theme tokens
-  - 100%: `Colors.success` (green)
-- Tapping the circle navigates to the quiz selection screen (see B4).
-- The existing green checkmark (lesson complete) stays in its current position — the circle is a separate affordance.
-
-**B4 · Quiz selection screen**
-- `app/quiz/select.tsx` (or a modal): shown when the user taps the quiz circle on a lesson row.
-- Route params: `lessonId`, `lessonTitle`.
-- Two options:
-  - **Quiz 1** → navigate to `app/quiz/[id].tsx` with the quiz for this lesson.
-  - **Quiz 2** → disabled button labeled "(in progress)" — no action.
-- The existing "Take the Quiz" banner at the bottom of `lesson/[id].tsx` can route here instead of directly to the quiz.
-
-**B5 · TTS audio button on quiz questions**
-- `app/quiz/[id].tsx`: add a speaker icon button next to each question text.
-- On press: call existing `ttsService.playText(question.question)` (same service used in lesson detail).
-- Handle loading/playing/error states the same way the lesson TTS does.
-
----
-
-### Phase C — Support Contact (already done per client PDF)
-
-- Client confirmed "Great" — no action needed.
+### Phase C — Support Contact ✅ Complete (confirmed by client)
 
 ---
 

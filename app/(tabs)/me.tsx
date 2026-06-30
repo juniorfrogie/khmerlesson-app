@@ -36,17 +36,11 @@ export default function MeScreen() {
   };
 
   const openSupportEmail = async () => {
-    const url =
-      'mailto:support@khmerlesson.com?subject=KhmerLesson%20Support';
-
-    const supported = await Linking.canOpenURL(url);
-    if (supported) {
+    const url = `mailto:${SUPPORT_EMAIL}?subject=KhmerLesson%20Support`;
+    try {
       await Linking.openURL(url);
-    } else {
-      Alert.alert(
-        'Email App Not Found',
-        'Please configure an email app on your device.'
-      );
+    } catch {
+      Alert.alert('Contact Support', SUPPORT_EMAIL);
     }
   };
 
@@ -81,14 +75,6 @@ export default function MeScreen() {
         },
       ],
     );
-  };
-
-  const handleSupport = async () => {
-    try {
-      await Linking.openURL(SUPPORT_EMAIL);
-    } catch (e) {
-      Alert.alert('Unable to open email app');
-    }
   };
 
   const handlePrivacyPolicy = () => {
@@ -132,7 +118,7 @@ export default function MeScreen() {
             <MenuItem
               icon="mail-outline"
               label="Support"
-              onPress={handleSupport}
+              onPress={openSupportEmail}
             />
             <View style={styles.separator} />
             <MenuItem

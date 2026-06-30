@@ -10,20 +10,44 @@ interface LessonRowProps {
   lesson: Lesson;
   onPress: (lesson: Lesson) => void;
   completed?: boolean;
+  quizScore?: { score: number; total: number };
+  onQuizPress?: () => void;
 }
 
-export function LessonRow({ lesson, onPress, completed = false }: LessonRowProps) {
+function getScoreColors(scorePercent: number) {
+  if (scorePercent === 1) return { tint: Colors.success, bg: Colors.successLight };
+  if (scorePercent >= 0.75) return { tint: Colors.warningDark, bg: Colors.warningLight };
+  if (scorePercent >= 0.5) return { tint: Colors.warning, bg: Colors.warningLight };
+  return { tint: Colors.error, bg: '#FEE2E2' };
+}
+
+export function LessonRow({ lesson, onPress, completed = false, quizScore, onQuizPress }: LessonRowProps) {
   const levelVariant = lesson.level.toLowerCase() as 'beginner' | 'intermediate' | 'advanced';
+  const hasScore = !!quizScore;
+  const scorePercent = hasScore ? quizScore.score / quizScore.total : 0;
+  const { tint, bg } = hasScore ? getScoreColors(scorePercent) : { tint: Colors.border, bg: 'transparent' };
 
   return (
     <TouchableOpacity style={styles.row} onPress={() => onPress(lesson)} activeOpacity={0.7}>
-      <View style={[styles.iconWrap, completed && styles.iconWrapDone]}>
-        <Ionicons
-          name={completed ? 'checkmark' : 'book-outline'}
-          size={18}
-          color={completed ? Colors.successDark : Colors.primary}
-        />
-      </View>
+      <TouchableOpacity
+        onPress={onQuizPress}
+        activeOpacity={0.7}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        style={[
+          styles.iconWrap,
+          hasScore
+            ? { backgroundColor: bg, borderColor: tint, borderWidth: 2 }
+            : styles.iconWrapEmpty,
+        ]}
+      >
+        {completed && (
+          <Ionicons
+            name="checkmark"
+            size={18}
+            color={hasScore ? tint : Colors.successDark}
+          />
+        )}
+      </TouchableOpacity>
       <View style={styles.info}>
         <Text variant="body" weight="medium">{lesson.title}</Text>
         <Text variant="caption" color={Colors.text.secondary} numberOfLines={2}>
@@ -58,12 +82,13 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: Radius.full,
-    backgroundColor: Colors.primaryMuted,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  iconWrapDone: {
-    backgroundColor: Colors.successLight,
+  iconWrapEmpty: {
+    borderWidth: 2,
+    borderColor: Colors.border,
+    backgroundColor: 'transparent',
   },
   info: {
     flex: 1,

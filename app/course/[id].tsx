@@ -13,6 +13,8 @@ import { LessonRow } from '@/src/features/lessons/components/LessonRow';
 import { useCourseLessons } from '@/src/services/hooks/useCourseLessons';
 import { useCourses } from '@/src/services/hooks/useCourses';
 import { useProgressStore } from '@/src/features/lessons/store/progressStore';
+import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
+import { useQuizzes } from '@/src/services/hooks/useQuizzes';
 import type { Lesson } from '@/src/features/lessons/types';
 
 export default function CourseScreen() {
@@ -23,6 +25,9 @@ export default function CourseScreen() {
   const { courses, refetch } = useCourses();
   const { lessons, loading, error, forbidden, forbiddenReason, refetch: refetchLessons } = useCourseLessons(courseId);
   const completedInCourse = useProgressStore(s => s.completedLessons[courseId ?? -1]) ?? [];
+  const quizScores = useQuizScoreStore(s => s.scores);
+  const { data: allQuizzes } = useQuizzes();
+  const quizByLesson = Object.fromEntries(allQuizzes.map(q => [q.lessonId, q.id]));
 
   // Always refetch on focus so hasAccess reflects latest state (e.g. after subscribing)
   useFocusEffect(
@@ -162,6 +167,11 @@ export default function CourseScreen() {
                 lesson={lesson}
                 onPress={(isLocked || isComingSoon) ? () => {} : handleLessonPress}
                 completed={completedInCourse.includes(lesson.id)}
+                quizScore={quizScores[String(lesson.id)]}
+                onQuizPress={quizByLesson[lesson.id]
+                  ? () => router.push(`/quiz/${quizByLesson[lesson.id]}`)
+                  : undefined
+                }
               />
             ))}
 
