@@ -69,7 +69,7 @@ Work these in order. Each item is one unit; run `npx tsc --noEmit` and update th
 
 ### Phase B — Quiz 1 Improvements ✅ Complete
 
-### Phase C — Support Contact ✅ Complete (confirmed by client)
+### Phase C — Support Contact ✅ Complete 
 
 ---
 

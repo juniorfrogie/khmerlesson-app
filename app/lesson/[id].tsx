@@ -6,7 +6,7 @@ import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import { Ionicons } from '@expo/vector-icons';
 import { friendlyError } from '@/src/shared/utils/error';
-import { Colors, Spacing, Radius, Shadow } from '@/src/shared/theme';
+import { Colors, Spacing, Radius, Shadow, FontSize } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { Badge } from '@/src/shared/components/Badge';
 import { ProgressBar } from '@/src/shared/components/ProgressBar';
@@ -17,6 +17,34 @@ import RenderHtml from 'react-native-render-html';
 import { useWindowDimensions } from 'react-native';
 import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
 import { useQuizByLesson } from '@/src/services/hooks/useQuizByLesson';
+
+const htmlBaseStyle = {
+  fontSize: FontSize.md,
+  lineHeight: FontSize.md * 1.8,
+  color: Colors.text.secondary,
+  fontFamily: undefined,
+};
+
+function injectBracketSpans(html: string): string {
+  return html.replace(/\[([^\]]+)\]/g, '<span class="bracket">[$1]</span>');
+}
+
+const htmlClassesStyles = {
+  bracket: { color: Colors.primaryLight, fontStyle: 'italic' as const },
+};
+
+const htmlTagsStyles = {
+  p: { marginTop: 0, marginBottom: Spacing.md },
+  strong: { color: Colors.text.primary, fontWeight: '600' as const },
+  b: { color: Colors.text.primary, fontWeight: '600' as const },
+  em: { color: Colors.text.secondary },
+  h1: { fontSize: FontSize.xl, lineHeight: FontSize.xl * 1.6, color: Colors.primary, fontWeight: '700' as const, marginBottom: Spacing.sm, marginTop: Spacing.sm },
+  h2: { fontSize: FontSize.lg, lineHeight: FontSize.lg * 1.6, color: Colors.primary, fontWeight: '700' as const, marginBottom: Spacing.sm, marginTop: Spacing.sm },
+  h3: { fontSize: FontSize.md, lineHeight: FontSize.md * 1.6, color: Colors.primary, fontWeight: '600' as const, marginBottom: Spacing.xs, marginTop: Spacing.sm },
+  ul: { marginTop: 0, marginBottom: Spacing.md, paddingLeft: Spacing.md },
+  ol: { marginTop: 0, marginBottom: Spacing.md, paddingLeft: Spacing.md },
+  li: { marginBottom: Spacing.xs, lineHeight: FontSize.md * 1.8 },
+};
 
 interface VocabItem {
   english: string;
@@ -236,7 +264,13 @@ export default function LessonScreen() {
                       ))}
                     </View>
                   ) : section.html ? (
-                    <RenderHtml contentWidth={width} source={{ html: section.html }} />
+                    <RenderHtml
+                      contentWidth={width - Spacing.xl * 2}
+                      source={{ html: injectBracketSpans(section.html) }}
+                      baseStyle={htmlBaseStyle}
+                      tagsStyles={htmlTagsStyles}
+                      classesStyles={htmlClassesStyles}
+                    />
                   ) : (
                     <Text variant="body" color={Colors.text.secondary}>{section.content}</Text>
                   )}
