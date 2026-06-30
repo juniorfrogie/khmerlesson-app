@@ -8,6 +8,7 @@ import { Text } from '@/src/shared/components/Text';
 import { ProgressBar } from '@/src/shared/components/ProgressBar';
 import { useQuizDetail } from '@/src/services/hooks/useQuizDetail';
 import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
+import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
 
 export default function QuizScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -30,6 +31,11 @@ export default function QuizScreen() {
   useEffect(() => {
     return () => stopTTS();
   }, []);
+
+  useEffect(() => {
+    if (!showResult || !quiz) return;
+    useQuizScoreStore.getState().setScore(String(quiz.lessonId), correctCount, total);
+  }, [showResult]);
 
   const questions = quiz?.questions ?? [];
   const total = questions.length;

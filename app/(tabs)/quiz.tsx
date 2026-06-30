@@ -7,34 +7,39 @@ import { Colors, Spacing, Radius, Shadow } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { useQuizzes } from '@/src/services/hooks/useQuizzes';
 import { Quiz } from '@/src/features/quizzes/types';
-
-// MOCK — replace with real quiz result store when backend supports it
-const MOCK_RESULTS: Record<number, { score: number; total: number }> = {
-  1: { score: 8, total: 10 },
-  3: { score: 5, total: 10 },
-};
+import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
 
 export default function QuizTab() {
   const router = useRouter();
   const { data: quizzes, loading, error, refetch } = useQuizzes();
+  const scores = useQuizScoreStore(state => state.scores);
 
   const renderItem = ({ item }: { item: Quiz }) => {
-    const result = MOCK_RESULTS[item.id];
+    const result = scores[String(item.lessonId)];
     const isCompleted = !!result;
     const scorePercent = result ? result.score / result.total : 0;
-    const scoreTint = scorePercent >= 0.8 ? Colors.successDark : scorePercent >= 0.6 ? Colors.warning : Colors.error;
+    const scoreTint =
+      scorePercent === 1 ? Colors.success :
+      scorePercent >= 0.75 ? Colors.warningDark :
+      scorePercent >= 0.5 ? Colors.warning :
+      Colors.error;
+    const scoreBg =
+      scorePercent === 1 ? Colors.successLight :
+      scorePercent >= 0.75 ? Colors.warningLight :
+      scorePercent >= 0.5 ? Colors.warningLight :
+      '#FEE2E2';
 
     return (
       <TouchableOpacity
-        style={[styles.card, isCompleted && styles.cardCompleted]}
+        style={[styles.card, isCompleted && { borderColor: scoreTint }]}
         onPress={() => router.push(`/quiz/${item.id}`)}
         activeOpacity={0.7}
       >
-        <View style={[styles.cardIcon, isCompleted && styles.cardIconDone]}>
+        <View style={[styles.cardIcon, isCompleted && { backgroundColor: scoreBg }]}>
           <Ionicons
             name={isCompleted ? 'checkmark-circle' : 'barbell-outline'}
             size={28}
-            color={isCompleted ? Colors.successDark : Colors.primary}
+            color={isCompleted ? scoreTint : Colors.primary}
           />
         </View>
         <View style={styles.cardBody}>
@@ -53,9 +58,8 @@ export default function QuizTab() {
           </Text>
           {isCompleted && (
             <View style={styles.scoreRow}>
-              {/* <Ionicons name="star" size={12} color={scoreTint} /> */}
               <Text variant="caption" color={scoreTint} weight="semibold">
-                90% correct
+                {Math.round(scorePercent * 100)}% correct
               </Text>
             </View>
           )}
@@ -166,5 +170,31 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Colors.primary,
+  },
+  cardCompleted: {
+    borderColor: Colors.successDark,
+  },
+  cardIconDone: {
+    backgroundColor: Colors.successLight,
+  },
+  cardTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    flexWrap: 'wrap',
+  },
+  cardTitle: {
+    flex: 1,
+  },
+  completedBadge: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    borderRadius: Radius.full,
+    backgroundColor: Colors.successLight,
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
   },
 });

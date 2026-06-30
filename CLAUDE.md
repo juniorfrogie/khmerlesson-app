@@ -80,7 +80,6 @@ src/
 context/                      # Living project spec — read before implementing
   backend-reference/
     api-overview.md           # Full API endpoint list
-    api-update-01.md          # Subscription model migration notes
     mobile-data-models.md     # Authoritative type shapes from backend
   feature-specs/              # Numbered spec files — work in order
   progress-tracker.md         # Read at the start of every session
@@ -139,7 +138,7 @@ Both silently ignore cancel/dismiss; other errors surface inline.
 
 ## Subscription & Course Access
 
-The app uses a subscription model (not per-course purchases). `src/features/subscriptions/store/subscriptionStore.ts` holds `mySubscription: Subscription | null`.
+The app uses a subscription model (not per-course purchases). `src/features/subscriptions/store/subscriptionStore.ts` holds `mySubscription: Subscription | null`. Methods: `setSubscription`, `clearSubscription`, `hydrate` (reads from AsyncStorage only — the live API sync happens via `useMySubscription` hook).
 
 `Course` access is determined by three fields from the API:
 - `isFree: boolean` — no login or subscription needed

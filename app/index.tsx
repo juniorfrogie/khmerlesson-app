@@ -7,6 +7,7 @@ import { ONBOARDING_COMPLETE_KEY } from './onboarding';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
+import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
 
 export default function Index() {
   const router = useRouter();
@@ -18,6 +19,7 @@ export default function Index() {
         hydrate(),
         useProgressStore.getState().hydrate(),
         useSubscriptionStore.getState().hydrate(),
+        useQuizScoreStore.getState().hydrate(),
       ]);
       const onboardingDone = await AsyncStorage.getItem(ONBOARDING_COMPLETE_KEY);
 
