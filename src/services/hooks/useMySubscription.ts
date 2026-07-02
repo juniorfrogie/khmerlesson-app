@@ -4,41 +4,44 @@ import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 import type { Subscription } from '@/src/features/subscriptions/types';
 
-interface State {
-  subscription: Subscription | null;
-  loading: boolean;
-  error: string | null;
-}
-
+// Returns the user's subscription, rendered live from the shared store. The
+// store is written by this hook's server sync AND by the purchase flow the
+// moment a purchase registers, so every consumer reflects a new subscription
+// immediately — including screens that mounted before the purchase (tab
+// screens stay mounted, so returning a mount-time fetch snapshot goes stale).
 export function useMySubscription() {
   const accessToken = useAuthStore(s => s.tokens?.accessToken);
-  const { setSubscription, clearSubscription } = useSubscriptionStore();
-  const [state, setState] = useState<State>({ subscription: null, loading: !!accessToken, error: null });
+  const subscription = useSubscriptionStore(s => s.mySubscription);
+  const [loading, setLoading] = useState(!!accessToken);
+  const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     if (!accessToken) {
-      setState({ subscription: null, loading: false, error: null });
+      setLoading(false);
       return;
     }
 
-    setState(s => ({ ...s, loading: true, error: null }));
+    setLoading(true);
+    setError(null);
 
     apiFetch<Subscription | null>('/api/v1/subscriptions/me', accessToken)
       .then(sub => {
+        const store = useSubscriptionStore.getState();
         if (sub) {
-          setSubscription(sub);
+          store.setSubscription(sub);
         } else {
-          clearSubscription();
+          store.clearSubscription();
         }
-        setState({ subscription: sub, loading: false, error: null });
+        setLoading(false);
       })
       .catch(err => {
-        setState(s => ({ ...s, loading: false, error: (err as Error).message }));
+        setLoading(false);
+        setError((err as Error).message);
       });
   }, [accessToken, tick]);
 
   const refetch = useCallback(() => setTick(t => t + 1), []);
 
-  return { ...state, refetch };
+  return { subscription, loading, error, refetch };
 }

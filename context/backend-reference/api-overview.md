@@ -20,6 +20,7 @@
 - POST /api/v1/quizzes/:id/submit - Submit quiz answers for scoring
 - GET /api/v1/stats - Get platform statistics
 - GET /api/v1/search - Search lessons and quizzes
+- POST /api/v1/debug-logs - Flush buffered client logs (src/shared/utils/logger.ts); body: { logs: [{ traceId, level, message, context? }] }
 
 ## Subscription APIs
 - GET /api/v1/subscription-plans - List all active plans (public, no auth)

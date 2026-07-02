@@ -1,9 +1,15 @@
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { Colors } from '@/src/shared/theme';
+import { startLogFlushing } from '@/src/shared/utils/logger';
 
 export default function RootLayout() {
+  useEffect(() => {
+    startLogFlushing();
+  }, []);
+
   return (
     <>
       <Stack

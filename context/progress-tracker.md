@@ -73,6 +73,21 @@ Work these in order. Each item is one unit; run `npx tsc --noEmit` and update th
 
 ---
 
+### Phase D — Subscription UX Fixes ✅ D1 Complete
+
+**D1 · Hide/disable already-purchased plan on paywall screen** ✅
+- Bug: After purchasing Plan 1, the paywall (`app/subscription/index.tsx`) still shows Plan 1 as a purchasable option.
+- Fix: In `subscription/index.tsx`, after loading `useMySubscription`, compare `subscription.planLevel` to each plan's `planLevel`. If they match and the subscription is `active` or `trial`, render the plan card as "Current Plan" (non-tappable, visually distinct — e.g. muted border + "Your Plan" badge) instead of showing the purchase CTA.
+- Edge cases: expired/cancelled subscription should still show the plan as purchasable so the user can renew.
+
+**D2 · 7-day free trial**
+- New feature: first-time subscribers get a 7-day free trial before being charged.
+- Backend: `POST /api/v1/subscriptions` already handles `offerType === INTRODUCTORY_OFFER` from StoreKit 2 JWS payload and sets `status: "trial"` in the DB. Confirm `currentPeriodEndsAt` is set to trial end date (7 days from purchase) and `planLevel` is populated correctly.
+- Frontend: On the paywall screen, show a "Start 7-day free trial" CTA instead of the price for users with no existing subscription. After trial starts, `useMySubscription` returns `status: "trial"` — subscription store and access gates already handle `trial` the same as `active`, so no other UI changes needed.
+- Backend check: verify `server/services/iap/ios/storekit2/` correctly detects `offerType === INTRODUCTORY_OFFER` and routes to `status: "trial"`.
+
+---
+
 ## Open Questions
 
 - **Quiz 2**: Deferred — client wants a cost estimate first. Show "in progress" placeholder (B4 above). Full implementation (retry-wrong-answers loop) is a separate scope item.

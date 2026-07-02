@@ -7,6 +7,8 @@ import { Colors, Spacing, Radius, FontSize } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { apiDelete } from '@/src/services/api';
+import { useMySubscription } from '@/src/services/hooks/useMySubscription';
+import { useSubscriptionPlans } from '@/src/services/hooks/useSubscriptionPlans';
 
 const SUPPORT_EMAIL = 'support@khmerlesson.com';
 const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
@@ -14,6 +16,14 @@ const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
 export default function MeScreen() {
   const router = useRouter();
   const { user, isAuthenticated, signOut } = useAuthStore();
+  const { subscription: mySubscription } = useMySubscription();
+  const { plans } = useSubscriptionPlans();
+
+  const isActiveOrTrial = mySubscription?.status === 'active' || mySubscription?.status === 'trial';
+  const currentPlan = isActiveOrTrial ? plans.find(p => p.id === mySubscription!.planId) : null;
+  const subscriptionLabel = isActiveOrTrial
+    ? `${currentPlan?.name ?? 'Plan'} · ${mySubscription!.status === 'trial' ? 'Trial' : 'Active'}`
+    : 'No active subscription';
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -107,6 +117,19 @@ export default function MeScreen() {
             <Text variant="label" color={Colors.text.secondary} style={styles.providerText}>
               {user.provider === 'apple' ? 'Apple' : 'Google'}
             </Text>
+          </View>
+        </View>
+
+        {/* Subscription section */}
+        <View style={styles.section}>
+          <Text variant="label" color={Colors.text.muted} style={styles.sectionTitle}>SUBSCRIPTION</Text>
+
+          <View style={styles.card}>
+            <MenuItem
+              icon="card-outline"
+              label={subscriptionLabel}
+              onPress={() => router.push('/subscription')}
+            />
           </View>
         </View>
 

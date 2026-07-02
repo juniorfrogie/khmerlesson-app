@@ -1,23 +1,32 @@
+import { logger, newTraceId } from '@/src/shared/utils/logger';
+
 const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? '';
 const API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? '';
 
 export const BUCKET_URL = process.env.EXPO_PUBLIC_BUCKET_URL ?? `${BASE_URL}/uploads`;
 
-function baseHeaders(accessToken?: string) {
+// Every call gets its own traceId, sent as X-Correlation-ID. The server
+// echoes it back and tags any of its own logs for this request with the
+// same id (server/auth/middleware/correlation.ts + server/utils/trace-logger.ts),
+// so a single id can be grepped/queried across both sides.
+function baseHeaders(accessToken?: string, traceId?: string) {
   return {
     'x-api-key': API_KEY,
     'Content-Type': 'application/json',
+    'X-Correlation-ID': traceId ?? newTraceId(),
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
   };
 }
 
 export async function apiFetch<T>(path: string, accessToken?: string): Promise<T> {
+  const traceId = newTraceId();
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: baseHeaders(accessToken),
+    headers: baseHeaders(accessToken, traceId),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    logger.warn(traceId, `apiFetch ${res.status} ${path}`, { response: text });
     let message = `API ${res.status}: ${path}`;
     let code: string | undefined;
     try {
@@ -29,6 +38,7 @@ export async function apiFetch<T>(path: string, accessToken?: string): Promise<T
     const err = new Error(message);
     if (code) (err as Error & { code: string }).code = code;
     (err as Error & { status: number }).status = res.status;
+    (err as Error & { traceId: string }).traceId = traceId;
     throw err;
   }
 
@@ -36,16 +46,17 @@ export async function apiFetch<T>(path: string, accessToken?: string): Promise<T
   return (json?.data ?? json) as T;
 }
 
-export async function apiPost<T>(path: string, body: unknown, accessToken?: string): Promise<T> {
+export async function apiPost<T>(path: string, body: unknown, accessToken?: string, traceIdOverride?: string): Promise<T> {
+  const traceId = traceIdOverride ?? newTraceId();
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'POST',
-    headers: baseHeaders(accessToken),
+    headers: baseHeaders(accessToken, traceId),
     body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.log(`[apiPost] ${res.status} ${path} — response: ${text}`);
+    logger.warn(traceId, `apiPost ${res.status} ${path}`, { response: text });
     let message = text || `API ${res.status}: ${path}`;
     let code: string | undefined;
     try {
@@ -57,6 +68,7 @@ export async function apiPost<T>(path: string, body: unknown, accessToken?: stri
     if (code) (err as Error & { code: string }).code = code;
     (err as Error & { status: number }).status = res.status;
     (err as Error & { responseBody: string }).responseBody = text;
+    (err as Error & { traceId: string }).traceId = traceId;
     throw err;
   }
 
@@ -65,14 +77,18 @@ export async function apiPost<T>(path: string, body: unknown, accessToken?: stri
 }
 
 export async function apiDelete(path: string, accessToken?: string): Promise<void> {
+  const traceId = newTraceId();
   const res = await fetch(`${BASE_URL}${path}`, {
     method: 'DELETE',
-    headers: baseHeaders(accessToken),
+    headers: baseHeaders(accessToken, traceId),
   });
 
   if (!res.ok) {
     const json = await res.json().catch(() => ({}));
-    throw new Error(json?.message ?? `API ${res.status}: ${path}`);
+    logger.warn(traceId, `apiDelete ${res.status} ${path}`, { response: json });
+    const err = new Error(json?.message ?? `API ${res.status}: ${path}`);
+    (err as Error & { traceId: string }).traceId = traceId;
+    throw err;
   }
 }
 
@@ -82,9 +98,11 @@ export async function apiPostForm<T>(
   body: Record<string, string>,
   accessToken?: string,
 ): Promise<T> {
+  const traceId = newTraceId();
   const headers: Record<string, string> = {
     'x-api-key': API_KEY,
     'Content-Type': 'application/x-www-form-urlencoded',
+    'X-Correlation-ID': traceId,
     ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
   };
 
@@ -96,7 +114,7 @@ export async function apiPostForm<T>(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.log(`[apiPostForm] ${res.status} ${path} — body: ${text}`);
+    logger.warn(traceId, `apiPostForm ${res.status} ${path}`, { response: text });
     let json: Record<string, unknown> = {};
     try { json = JSON.parse(text); } catch { /* ignore */ }
 
@@ -109,6 +127,7 @@ export async function apiPostForm<T>(
     const code = json?.code as string | undefined;
     const err = new Error(message);
     if (code) (err as Error & { code: string }).code = code;
+    (err as Error & { traceId: string }).traceId = traceId;
     throw err;
   }
 

@@ -7,40 +7,59 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/src/shared/them
 import { Text } from '@/src/shared/components/Text';
 import { Button } from '@/src/shared/components/Button';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
-import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 import { useSubscriptionPlans } from '@/src/services/hooks/useSubscriptionPlans';
+import { useMySubscription } from '@/src/services/hooks/useMySubscription';
 import type { SubscriptionPlan } from '@/src/features/subscriptions/types';
 import {
-  connectIAP,
-  disconnectIAP,
-  purchaseSubscription,
+  initPurchaseFlow,
+  disposePurchaseFlow,
+  requestPlanPurchase,
+  loadSubscriptionProduct,
+  getLastPurchaseTraceId,
   IAP_NOT_AVAILABLE,
 } from '@/src/features/courses/service/purchaseService';
+import { logger, newTraceId, flushLogs } from '@/src/shared/utils/logger';
 
 function formatPrice(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+type ProductAvailability = 'checking' | 'available' | 'unavailable';
+
 export default function SubscriptionScreen() {
   const router = useRouter();
   const { plans, loading: plansLoading, error: plansError } = useSubscriptionPlans();
-  const { setSubscription } = useSubscriptionStore();
+  const { subscription: mySubscription } = useMySubscription();
+
+  const activePlanId =
+    mySubscription && (mySubscription.status === 'active' || mySubscription.status === 'trial')
+      ? mySubscription.planId
+      : null;
 
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
   const [purchasing, setPurchasing] = useState(false);
   const [iapUnavailable, setIapUnavailable] = useState(false);
+  const [iapReady, setIapReady] = useState(false);
+  const [productAvailability, setProductAvailability] = useState<Record<number, ProductAvailability>>({});
 
-  // Auto-select the first plan once loaded
+  // Auto-select the first plan that isn't the user's current active plan
   useEffect(() => {
     if (plans.length > 0 && !selectedPlan) {
-      setSelectedPlan(plans[0]);
+      const firstSelectable = plans.find(p => p.id !== activePlanId) ?? plans[0];
+      setSelectedPlan(firstSelectable);
     }
-  }, [plans]);
+  }, [plans, activePlanId]);
 
-  // Check IAP availability (Expo Go detection only — actual purchase connects internally)
+  // Connection + purchase listeners live for as long as this screen is open —
+  // see the comment atop purchaseService.ts for why they aren't re-created
+  // per purchase attempt. Deliberately mount/unmount only ([]) — do NOT add
+  // `plans` or anything else here, or the connection gets torn down and
+  // rebuilt on every re-render, which is the exact bug that caused the
+  // replay issue this screen used to have.
   useEffect(() => {
     let mounted = true;
-    connectIAP()
+    initPurchaseFlow()
+      .then(() => { if (mounted) setIapReady(true); })
       .catch(err => {
         if (mounted && (err as Error).message === IAP_NOT_AVAILABLE) {
           setIapUnavailable(true);
@@ -48,9 +67,26 @@ export default function SubscriptionScreen() {
       });
     return () => {
       mounted = false;
-      disconnectIAP().catch(() => {});
+      disposePurchaseFlow();
     };
   }, []);
+
+  // Check every plan against the App Store as soon as the connection is ready
+  // and plans have loaded — a fast, cheap way to tell "Apple doesn't
+  // recognize this product" apart from "the purchase itself failed," instead
+  // of only finding out after a 90-second purchase attempt.
+  useEffect(() => {
+    if (!iapReady || plans.length === 0) return;
+    let mounted = true;
+    const traceId = newTraceId();
+    setProductAvailability(Object.fromEntries(plans.map(p => [p.id, 'checking'])));
+    Promise.all(plans.map(async (plan) => {
+      const product = await loadSubscriptionProduct(plan.productIdIos, traceId);
+      if (!mounted) return;
+      setProductAvailability(prev => ({ ...prev, [plan.id]: product ? 'available' : 'unavailable' }));
+    })).then(() => flushLogs());
+    return () => { mounted = false; };
+  }, [iapReady, plans]);
 
   const handleSubscribe = async () => {
     if (!selectedPlan) return;
@@ -69,9 +105,8 @@ export default function SubscriptionScreen() {
         const payload = JSON.parse(atob(tokens.accessToken.split('.')[1]));
         console.log('[subscribe] using token — userId in token:', payload?.id, '| store user.id:', user?.id);
       } catch { /* ignore */ }
-      const subscription = await purchaseSubscription(selectedPlan.productIdIos, tokens.accessToken);
-      setSubscription(subscription);
-      setPurchasing(false);
+
+      const subscription = await requestPlanPurchase(selectedPlan.productIdIos, tokens.accessToken);
 
       const isExpired = new Date(subscription.currentPeriodEndsAt) < new Date();
       if (isExpired) {
@@ -85,10 +120,39 @@ export default function SubscriptionScreen() {
 
       router.back();
     } catch (err) {
-      setPurchasing(false);
       const msg = (err as Error).message;
       if (msg === 'CANCELED') return;
+      if (msg === 'PURCHASE_SCHEDULED') {
+        // Apple defers switches to a lower-level plan until the next renewal —
+        // this is its designed behavior, not a failure. The user keeps the
+        // current plan (and its content) until the period ends.
+        Alert.alert(
+          'Plan Change Scheduled',
+          `Your plan will switch to ${selectedPlan.name} when your current subscription period ends. Until then, you keep your current plan.`,
+          [{ text: 'OK', onPress: () => router.back() }],
+        );
+        return;
+      }
+      if (msg === 'PURCHASE_TIMEOUT') {
+        // A timeout usually means Apple took the payment but confirmation is
+        // late — not that the purchase failed. Reconciliation registers it
+        // automatically the next time this screen opens.
+        Alert.alert(
+          'Confirmation Pending',
+          "The App Store hasn't confirmed your purchase yet. If your payment went through, your subscription will activate automatically — reopen this screen in a minute to check.",
+          [{ text: 'OK', onPress: () => router.back() }],
+        );
+        return;
+      }
       Alert.alert('Subscription Failed', msg ?? 'Something went wrong. Please try again.');
+    } finally {
+      // Guaranteed regardless of how requestPlanPurchase() settles, so the
+      // button can never stay stuck on "Processing..." — if this log line is
+      // ever missing from debug_logs for a given traceId, requestPlanPurchase
+      // itself never settled (a promise-chain bug, not a UI bug).
+      setPurchasing(false);
+      logger.info(getLastPurchaseTraceId() ?? 'unknown', 'handleSubscribe finally — setPurchasing(false)');
+      flushLogs();
     }
   };
 
@@ -96,7 +160,7 @@ export default function SubscriptionScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: 'Choose a Plan' }} />
+      <Stack.Screen options={{ title: activePlanId ? 'Manage Subscription' : 'Choose a Plan' }} />
       <SafeAreaView style={styles.safe} edges={['bottom']}>
         <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
 
@@ -104,9 +168,11 @@ export default function SubscriptionScreen() {
             <View style={styles.iconWrap}>
               <Ionicons name="star" size={36} color={Colors.primary} />
             </View>
-            <Text variant="title" style={styles.heroTitle}>Unlock Premium</Text>
+            <Text variant="title" style={styles.heroTitle}>
+              {activePlanId ? 'Manage Subscription' : 'Unlock Premium'}
+            </Text>
             <Text variant="caption" color={Colors.text.secondary} style={styles.heroSubtitle}>
-              Choose a plan to access premium courses
+              {activePlanId ? 'Switch to a different plan' : 'Choose a plan to access premium courses'}
             </Text>
           </View>
 
@@ -126,32 +192,60 @@ export default function SubscriptionScreen() {
           {!plansLoading && !hasError && (
             <View style={styles.planList}>
               {plans.map(plan => {
-                const isSelected = selectedPlan?.id === plan.id;
+                const isCurrentPlan = plan.id === activePlanId;
+                const isSelected = !isCurrentPlan && selectedPlan?.id === plan.id;
+                const availability = productAvailability[plan.id];
+                const isUnavailable = availability === 'unavailable';
                 return (
                   <TouchableOpacity
                     key={plan.id}
-                    style={[styles.planCard, isSelected && styles.planCardSelected]}
-                    onPress={() => setSelectedPlan(plan)}
-                    activeOpacity={0.8}
+                    style={[
+                      styles.planCard,
+                      isSelected && styles.planCardSelected,
+                      isCurrentPlan && styles.planCardCurrent,
+                      isUnavailable && styles.planCardUnavailable,
+                    ]}
+                    onPress={() => !isCurrentPlan && setSelectedPlan(plan)}
+                    activeOpacity={isCurrentPlan ? 1 : 0.8}
                   >
                     <View style={styles.radioCol}>
-                      <View style={[styles.radio, isSelected && styles.radioSelected]}>
-                        {isSelected && <View style={styles.radioDot} />}
-                      </View>
+                      {isCurrentPlan ? (
+                        <Ionicons name="checkmark-circle" size={20} color={Colors.success} />
+                      ) : (
+                        <View style={[styles.radio, isSelected && styles.radioSelected]}>
+                          {isSelected && <View style={styles.radioDot} />}
+                        </View>
+                      )}
                     </View>
                     <View style={styles.planInfo}>
-                      <Text
-                        variant="subtitle"
-                        color={isSelected ? Colors.primary : Colors.text.primary}
-                        weight={isSelected ? 'semibold' : 'regular'}
-                      >
-                        {plan.name}
-                      </Text>
+                      <View style={styles.planNameRow}>
+                        <Text
+                          variant="subtitle"
+                          color={isCurrentPlan ? Colors.text.muted : isSelected ? Colors.primary : Colors.text.primary}
+                          weight={isSelected ? 'semibold' : 'regular'}
+                        >
+                          {plan.name}
+                        </Text>
+                        {isCurrentPlan && (
+                          <View style={styles.currentBadge}>
+                            <Text style={styles.currentBadgeText}>Your Plan</Text>
+                          </View>
+                        )}
+                        {isUnavailable && (
+                          <View style={styles.unavailableBadge}>
+                            <Text style={styles.unavailableBadgeText}>Not available from App Store</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text variant="caption" color={Colors.text.secondary} style={styles.planDesc}>
                         {plan.description}
                       </Text>
                     </View>
-                    <Text style={[styles.planPrice, isSelected && styles.planPriceSelected]}>
+                    <Text style={[
+                      styles.planPrice,
+                      isSelected && styles.planPriceSelected,
+                      isCurrentPlan && styles.planPriceMuted,
+                    ]}>
                       {formatPrice(plan.price)}{'\n'}
                       <Text style={styles.planPricePer}>/year</Text>
                     </Text>
@@ -177,13 +271,16 @@ export default function SubscriptionScreen() {
                 size="lg"
                 fullWidth
                 loading={purchasing}
+                disabled={!!selectedPlan && productAvailability[selectedPlan.id] === 'unavailable'}
                 onPress={handleSubscribe}
               >
                 {purchasing
                   ? 'Processing...'
-                  : selectedPlan
-                    ? `Subscribe — ${formatPrice(selectedPlan.price)}/year`
-                    : 'Subscribe'}
+                  : selectedPlan && productAvailability[selectedPlan.id] === 'unavailable'
+                    ? 'Unavailable right now'
+                    : selectedPlan
+                      ? `Subscribe — ${formatPrice(selectedPlan.price)}/year`
+                      : 'Subscribe'}
               </Button>
             )}
             {!hasError && (
@@ -243,6 +340,46 @@ const styles = StyleSheet.create({
   planCardSelected: {
     borderColor: Colors.primary,
     backgroundColor: Colors.primaryMuted,
+  },
+  planCardCurrent: {
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
+    opacity: 0.7,
+  },
+  planCardUnavailable: {
+    borderColor: Colors.warning,
+    borderStyle: 'dashed',
+  },
+  planNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    flexWrap: 'wrap',
+  },
+  currentBadge: {
+    backgroundColor: Colors.successLight,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  currentBadgeText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.successDark,
+  },
+  unavailableBadge: {
+    backgroundColor: Colors.warningLight,
+    borderRadius: Radius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  unavailableBadgeText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    color: Colors.warning,
+  },
+  planPriceMuted: {
+    color: Colors.text.muted,
   },
   radioCol: { paddingTop: 2 },
   radio: {

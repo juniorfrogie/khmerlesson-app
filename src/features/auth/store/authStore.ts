@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiPost } from '@/src/services/api';
+import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 import type { User, AuthTokens } from '../types';
 
 const AUTH_STORAGE_KEY = 'auth_state';
@@ -38,6 +39,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   signOut: async () => {
     await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
+    // The subscription belongs to the account signing out — without this, a
+    // fresh login hydrates the previous user's persisted subscription state.
+    useSubscriptionStore.getState().clearSubscription();
     set({ user: null, tokens: null, isAuthenticated: false, isGuest: false });
   },
 
