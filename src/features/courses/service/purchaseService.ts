@@ -182,17 +182,28 @@ async function reconcileAvailablePurchases(): Promise<void> {
   const accessToken = useAuthStore.getState().tokens?.accessToken;
   if (!accessToken) return;
 
+  const traceId = newTraceId();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const available: any[] = await iap.getAvailablePurchases().catch(() => []);
+  const available: any[] = await iap.getAvailablePurchases().catch((err: unknown) => {
+    logger.warn(traceId, 'reconcile: getAvailablePurchases threw', { message: (err as Error)?.message });
+    return [];
+  });
   const ours = (available ?? [])
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .filter((p: any) => p.productId?.startsWith(KHMER_SUBSCRIPTION_PREFIX))
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .sort((a: any, b: any) => (b.transactionDate ?? 0) - (a.transactionDate ?? 0));
   const newest = ours[0];
-  if (!newest || deniedTransactionIds.has(newest.transactionId)) return;
+  if (!newest || deniedTransactionIds.has(newest.transactionId)) {
+    logger.info(traceId, 'reconcile: nothing to register', {
+      totalAvailable: (available ?? []).length,
+      matchingPrefix: ours.length,
+      reason: !newest ? 'no matching entitlement' : 'transaction previously denied for this account',
+    });
+    flushLogs();
+    return;
+  }
 
-  const traceId = newTraceId();
   try {
     logger.info(traceId, 'reconciling newest entitlement found on init', { productId: newest.productId, candidates: ours.length });
     await registerWithBackend(extractJws(newest), accessToken, traceId, false);

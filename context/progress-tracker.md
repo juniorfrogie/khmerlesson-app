@@ -54,6 +54,8 @@ Update this file after every meaningful implementation change. If bugs or any su
 - **B3** · Color-coded quiz circle on `LessonRow`: left circle is independently tappable (`onQuizPress`); no score → empty outline ring; has score → filled with 4-band color (error/warning/warningDark/success); completion checkmark shown inside circle in score tint color; `course/[id].tsx` reads `quizScores` from store and passes `quizScore` + `onQuizPress` (→ `/quiz/select`) per row
 - **B4** · Skipped — quiz circle on `LessonRow` navigates directly to the quiz; `course/[id].tsx` uses `useQuizzes` to build a `lessonId → quizId` map; circle is only tappable when a quiz exists for that lesson; "Take the Quiz" banner in `lesson/[id].tsx` navigates directly to `/quiz/[id]`
 - **B5** · TTS speaker button on quiz questions (`quiz/[id].tsx`): toggles `playTTS`/`stopTTS`; icon animates between outline and filled; auto-stops on question change and screen unmount
+- **D1** · Paywall "Your Plan" guard (`app/subscription/index.tsx`): `useMySubscription` called on mount; `activePlanId` derived from `planId` when status is `active` or `trial`; current-plan card rendered non-tappable (70% opacity, green checkmark, "Your Plan" badge) — expired/cancelled subscriptions remain selectable for renewal; auto-select skips the current plan
+- **D2** · 7-day free trial UI (`app/subscription/index.tsx`): `isTrialEligible` flag set when `mySubscription === null` after subscription fetch resolves; green "7-day free trial for new subscribers" pill badge shown in hero; CTA button label switches to "Try Free for 7 Days"; terms line updates to show trial price breakdown; backend already sets `status: "trial"` via `isIntroductoryOffer` from StoreKit 2 JWS (`server/api.ts` line 441) — no backend changes needed
 
 ## In Progress
 
@@ -73,14 +75,14 @@ Work these in order. Each item is one unit; run `npx tsc --noEmit` and update th
 
 ---
 
-### Phase D — Subscription UX Fixes ✅ D1 Complete
+### Phase D — Subscription UX Fixes ✅ Complete
 
 **D1 · Hide/disable already-purchased plan on paywall screen** ✅
 - Bug: After purchasing Plan 1, the paywall (`app/subscription/index.tsx`) still shows Plan 1 as a purchasable option.
 - Fix: In `subscription/index.tsx`, after loading `useMySubscription`, compare `subscription.planLevel` to each plan's `planLevel`. If they match and the subscription is `active` or `trial`, render the plan card as "Current Plan" (non-tappable, visually distinct — e.g. muted border + "Your Plan" badge) instead of showing the purchase CTA.
 - Edge cases: expired/cancelled subscription should still show the plan as purchasable so the user can renew.
 
-**D2 · 7-day free trial**
+**D2 · 7-day free trial** ✅
 - New feature: first-time subscribers get a 7-day free trial before being charged.
 - Backend: `POST /api/v1/subscriptions` already handles `offerType === INTRODUCTORY_OFFER` from StoreKit 2 JWS payload and sets `status: "trial"` in the DB. Confirm `currentPeriodEndsAt` is set to trial end date (7 days from purchase) and `planLevel` is populated correctly.
 - Frontend: On the paywall screen, show a "Start 7-day free trial" CTA instead of the price for users with no existing subscription. After trial starts, `useMySubscription` returns `status: "trial"` — subscription store and access gates already handle `trial` the same as `active`, so no other UI changes needed.

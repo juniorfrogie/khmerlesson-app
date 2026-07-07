@@ -29,12 +29,16 @@ type ProductAvailability = 'checking' | 'available' | 'unavailable';
 export default function SubscriptionScreen() {
   const router = useRouter();
   const { plans, loading: plansLoading, error: plansError } = useSubscriptionPlans();
-  const { subscription: mySubscription } = useMySubscription();
+  const { subscription: mySubscription, loading: subscriptionLoading } = useMySubscription();
 
   const activePlanId =
     mySubscription && (mySubscription.status === 'active' || mySubscription.status === 'trial')
       ? mySubscription.planId
       : null;
+
+  // True only when we've confirmed the user has never had any subscription.
+  // Not shown while loading — avoids flashing the trial banner and then hiding it.
+  const isTrialEligible = !subscriptionLoading && mySubscription === null;
 
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
   const [purchasing, setPurchasing] = useState(false);
@@ -174,6 +178,12 @@ export default function SubscriptionScreen() {
             <Text variant="caption" color={Colors.text.secondary} style={styles.heroSubtitle}>
               {activePlanId ? 'Switch to a different plan' : 'Choose a plan to access premium courses'}
             </Text>
+            {isTrialEligible && (
+              <View style={styles.trialBadge}>
+                <Ionicons name="gift-outline" size={14} color={Colors.successDark} />
+                <Text style={styles.trialBadgeText}>7-day free trial for new subscribers</Text>
+              </View>
+            )}
           </View>
 
           {plansLoading && (
@@ -278,14 +288,18 @@ export default function SubscriptionScreen() {
                   ? 'Processing...'
                   : selectedPlan && productAvailability[selectedPlan.id] === 'unavailable'
                     ? 'Unavailable right now'
-                    : selectedPlan
-                      ? `Subscribe — ${formatPrice(selectedPlan.price)}/year`
-                      : 'Subscribe'}
+                    : isTrialEligible && selectedPlan
+                      ? 'Try Free for 7 Days'
+                      : selectedPlan
+                        ? `Subscribe — ${formatPrice(selectedPlan.price)}/year`
+                        : 'Subscribe'}
               </Button>
             )}
             {!hasError && (
               <Text variant="caption" color={Colors.text.muted} style={styles.terms}>
-                {`Payment via ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}. Renews annually. Cancel anytime in your account settings.`}
+                {isTrialEligible
+                  ? `Free for 7 days, then ${selectedPlan ? formatPrice(selectedPlan.price) : '...'}/year via ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}. Cancel anytime.`
+                  : `Payment via ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}. Renews annually. Cancel anytime in your account settings.`}
               </Text>
             )}
           </View>
@@ -315,6 +329,21 @@ const styles = StyleSheet.create({
   },
   heroTitle: { textAlign: 'center' },
   heroSubtitle: { textAlign: 'center' },
+  trialBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: Colors.successLight,
+    borderRadius: Radius.full,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  trialBadgeText: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+    color: Colors.successDark,
+  },
   loader: { marginVertical: Spacing.xxl },
   errorBox: {
     flexDirection: 'row',
