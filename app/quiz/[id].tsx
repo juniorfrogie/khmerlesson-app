@@ -108,6 +108,11 @@ export default function QuizScreen() {
       scorePercent >= 0.8 ? 'Great work!' :
         scorePercent >= 0.6 ? 'Good effort!' :
           'Keep practicing!';
+  const scoreColor =
+    scorePercent === 1 ? Colors.success :
+      scorePercent >= 0.75 ? Colors.info :
+        scorePercent >= 0.5 ? Colors.warning :
+          Colors.error;
 
   return (
     <>
@@ -152,9 +157,9 @@ export default function QuizScreen() {
               <Ionicons
                 name={scorePercent >= 0.8 ? 'trophy-outline' : 'school-outline'}
                 size={56}
-                color={scorePercent >= 0.8 ? Colors.warning : Colors.primary}
+                color={scoreColor}
               />
-              <Text variant="hero" color={Colors.text.primary} weight="bold">
+              <Text variant="hero" color={scoreColor} weight="bold">
                 {correctCount} / {total}
               </Text>
               <Text variant="subtitle" color={Colors.text.secondary}>

@@ -133,6 +133,25 @@ export default function MeScreen() {
           </View>
         </View>
 
+        {/* App section */}
+        <View style={styles.section}>
+          <Text variant="label" color={Colors.text.muted} style={styles.sectionTitle}>APP</Text>
+
+          <View style={styles.card}>
+            <MenuItem
+              icon="hand-left-outline"
+              label="Welcome"
+              onPress={() => router.push('/welcome')}
+            />
+            <View style={styles.separator} />
+            <MenuItem
+              icon="help-circle-outline"
+              label="Quiz Guide"
+              onPress={() => router.push('/quiz-guide')}
+            />
+          </View>
+        </View>
+
         {/* Account section */}
         <View style={styles.section}>
           <Text variant="label" color={Colors.text.muted} style={styles.sectionTitle}>ACCOUNT</Text>

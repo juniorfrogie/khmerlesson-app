@@ -20,12 +20,12 @@ export default function QuizTab() {
     const scorePercent = result ? result.score / result.total : 0;
     const scoreTint =
       scorePercent === 1 ? Colors.success :
-      scorePercent >= 0.75 ? Colors.warningDark :
+      scorePercent >= 0.75 ? Colors.info :
       scorePercent >= 0.5 ? Colors.warning :
       Colors.error;
     const scoreBg =
       scorePercent === 1 ? Colors.successLight :
-      scorePercent >= 0.75 ? Colors.warningLight :
+      scorePercent >= 0.75 ? Colors.infoLight :
       scorePercent >= 0.5 ? Colors.warningLight :
       '#FEE2E2';
 

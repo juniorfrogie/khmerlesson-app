@@ -16,7 +16,7 @@ interface LessonRowProps {
 
 function getScoreColors(scorePercent: number) {
   if (scorePercent === 1) return { tint: Colors.success, bg: Colors.successLight };
-  if (scorePercent >= 0.75) return { tint: Colors.warningDark, bg: Colors.warningLight };
+  if (scorePercent >= 0.75) return { tint: Colors.info, bg: Colors.infoLight };
   if (scorePercent >= 0.5) return { tint: Colors.warning, bg: Colors.warningLight };
   return { tint: Colors.error, bg: '#FEE2E2' };
 }
