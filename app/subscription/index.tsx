@@ -1,4 +1,4 @@
-import { View, StyleSheet, Alert, Platform, ScrollView, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, Alert, Platform, ScrollView, ActivityIndicator, TouchableOpacity, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, Stack } from 'expo-router';
 import { useState, useEffect } from 'react';
@@ -24,6 +24,11 @@ function formatPrice(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
+// Apple's standard EULA — required by Apple to be linked in-app for auto-renewable
+// subscriptions even when the app doesn't define a custom one.
+const TERMS_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+
 type ProductAvailability = 'checking' | 'available' | 'unavailable';
 
 export default function SubscriptionScreen() {
@@ -45,6 +50,10 @@ export default function SubscriptionScreen() {
   const [iapUnavailable, setIapUnavailable] = useState(false);
   const [iapReady, setIapReady] = useState(false);
   const [productAvailability, setProductAvailability] = useState<Record<number, ProductAvailability>>({});
+  // Real per-storefront price from StoreKit (e.g. Cambodia's App Store may
+  // charge a different amount than the US for the same plan) — falls back to
+  // the backend's flat price below only when this hasn't loaded yet.
+  const [productPrices, setProductPrices] = useState<Record<number, string>>({});
 
   // Auto-select the first plan that isn't the user's current active plan
   useEffect(() => {
@@ -88,6 +97,9 @@ export default function SubscriptionScreen() {
       const product = await loadSubscriptionProduct(plan.productIdIos, traceId);
       if (!mounted) return;
       setProductAvailability(prev => ({ ...prev, [plan.id]: product ? 'available' : 'unavailable' }));
+      if (product?.displayPrice) {
+        setProductPrices(prev => ({ ...prev, [plan.id]: product.displayPrice }));
+      }
     })).then(() => flushLogs());
     return () => { mounted = false; };
   }, [iapReady, plans]);
@@ -160,7 +172,21 @@ export default function SubscriptionScreen() {
     }
   };
 
+  // Returns null while still waiting on the real per-storefront StoreKit price —
+  // callers show a loading placeholder instead of the backend's flat price, so
+  // the number never flashes from one value to another once StoreKit resolves.
+  // Falls back to the backend price immediately if IAP can't be checked at all
+  // (Expo Go) or once StoreKit confirms the product truly isn't available.
+  const priceFor = (plan: SubscriptionPlan): string | null => {
+    if (iapUnavailable) return formatPrice(plan.price);
+    const availability = productAvailability[plan.id];
+    if (availability === 'available') return productPrices[plan.id] ?? formatPrice(plan.price);
+    if (availability === 'unavailable') return formatPrice(plan.price);
+    return null; // undefined or 'checking' — still resolving
+  };
+
   const hasError = !!plansError || (!plansLoading && plans.length === 0);
+  const selectedPrice = selectedPlan ? priceFor(selectedPlan) : null;
 
   return (
     <>
@@ -206,6 +232,7 @@ export default function SubscriptionScreen() {
                 const isSelected = !isCurrentPlan && selectedPlan?.id === plan.id;
                 const availability = productAvailability[plan.id];
                 const isUnavailable = availability === 'unavailable';
+                const price = priceFor(plan);
                 return (
                   <TouchableOpacity
                     key={plan.id}
@@ -251,14 +278,18 @@ export default function SubscriptionScreen() {
                         {plan.description}
                       </Text>
                     </View>
-                    <Text style={[
-                      styles.planPrice,
-                      isSelected && styles.planPriceSelected,
-                      isCurrentPlan && styles.planPriceMuted,
-                    ]}>
-                      {formatPrice(plan.price)}{'\n'}
-                      <Text style={styles.planPricePer}>/year</Text>
-                    </Text>
+                    {price ? (
+                      <Text style={[
+                        styles.planPrice,
+                        isSelected && styles.planPriceSelected,
+                        isCurrentPlan && styles.planPriceMuted,
+                      ]}>
+                        {price}{'\n'}
+                        <Text style={styles.planPricePer}>/year</Text>
+                      </Text>
+                    ) : (
+                      <View style={styles.priceSkeleton} />
+                    )}
                   </TouchableOpacity>
                 );
               })}
@@ -290,16 +321,24 @@ export default function SubscriptionScreen() {
                     ? 'Unavailable right now'
                     : isTrialEligible && selectedPlan
                       ? 'Try Free for 7 Days'
-                      : selectedPlan
-                        ? `Subscribe — ${formatPrice(selectedPlan.price)}/year`
+                      : selectedPlan && selectedPrice
+                        ? `Subscribe — ${selectedPrice}/year`
                         : 'Subscribe'}
               </Button>
             )}
             {!hasError && (
               <Text variant="caption" color={Colors.text.muted} style={styles.terms}>
                 {isTrialEligible
-                  ? `Free for 7 days, then ${selectedPlan ? formatPrice(selectedPlan.price) : '...'}/year via ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}. Cancel anytime.`
+                  ? `Includes a 7-day free trial. After the trial, your subscription renews automatically for ${selectedPrice ?? '...'}/year until cancelled.`
                   : `Payment via ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}. Renews annually. Cancel anytime in your account settings.`}
+                {'\n'}
+                <Text style={styles.termsLink} onPress={() => Linking.openURL(TERMS_URL)}>
+                  Terms of Use
+                </Text>
+                {'  •  '}
+                <Text style={styles.termsLink} onPress={() => Linking.openURL(PRIVACY_URL)}>
+                  Privacy Policy
+                </Text>
               </Text>
             )}
           </View>
@@ -441,6 +480,12 @@ const styles = StyleSheet.create({
     fontWeight: FontWeight.regular,
     color: Colors.text.muted,
   },
+  priceSkeleton: {
+    width: 52,
+    height: 32,
+    borderRadius: Radius.sm,
+    backgroundColor: Colors.borderLight,
+  },
   footer: { marginTop: Spacing.xl, gap: Spacing.md },
   iapWarning: {
     flexDirection: 'row',
@@ -452,4 +497,5 @@ const styles = StyleSheet.create({
   },
   iapWarningText: { flex: 1, lineHeight: 18 },
   terms: { textAlign: 'center', lineHeight: 18 },
+  termsLink: { color: Colors.primary, fontWeight: FontWeight.semibold },
 });

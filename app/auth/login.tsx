@@ -22,6 +22,8 @@ const WEB_CLIENT_ID = process.env.EXPO_PUBLIC_WEB_CLIENT_ID ?? '';
 const IOS_CLIENT_ID = process.env.EXPO_PUBLIC_IOS_CLIENT_ID ?? '';
 
 const URL_PRIVACY_POLICY = process.env.EXPO_PUBLIC_API_BASE_URL + '/privacy-policy';
+// Apple's standard EULA — no custom terms of use defined for this app.
+const URL_TERMS_OF_USE = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
 // Google iOS OAuth client expects its own reversed-ID scheme as the redirect URI
 const REVERSED_IOS_CLIENT_ID = process.env.EXPO_PUBLIC_REVERSED_IOS_CLIENT_ID;
 
@@ -204,7 +206,15 @@ export default function LoginScreen() {
           style={styles.footer}
         >
           By continuing, you agree to our{' '}
-
+          <Text
+            style={{ color: Colors.primary }}
+            onPress={() =>
+              Linking.openURL(URL_TERMS_OF_USE)
+            }
+          >
+            Terms of Use
+          </Text>
+          {' '}and{' '}
           <Text
             style={{ color: Colors.primary }}
             onPress={() =>

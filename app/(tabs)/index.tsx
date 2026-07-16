@@ -50,6 +50,27 @@ export default function HomeScreen() {
           <Text variant="title">Keep Learning Khmer</Text>
         </View>
 
+        <View style={styles.section}>
+          <TouchableOpacity
+            style={styles.premiumBanner}
+            activeOpacity={0.85}
+            onPress={() => router.push('/subscription')}
+          >
+            <View style={styles.premiumIconWrap}>
+              <Ionicons name="star" size={22} color={Colors.text.inverse} />
+            </View>
+            <View style={styles.premiumInfo}>
+              <Text variant="body" weight="semibold" color={Colors.text.inverse}>
+                Unlock Premium
+              </Text>
+              <Text variant="caption" color="rgba(255,255,255,0.8)">
+                Get full access to all courses
+              </Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.text.inverse} />
+          </TouchableOpacity>
+        </View>
+
         {lastAccessed && (
           <View style={styles.section}>
             <Text variant="subtitle">Continue Learning</Text>
@@ -186,6 +207,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   continueInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  premiumBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    backgroundColor: Colors.primary,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    ...Shadow.sm,
+  },
+  premiumIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.full,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  premiumInfo: {
     flex: 1,
     gap: 2,
   },

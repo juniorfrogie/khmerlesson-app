@@ -12,6 +12,8 @@ import { useSubscriptionPlans } from '@/src/services/hooks/useSubscriptionPlans'
 
 const SUPPORT_EMAIL = 'support@khmerlesson.com';
 const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
+// Apple's standard EULA — no custom terms of use defined for this app.
+const TERMS_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
 
 export default function MeScreen() {
   const router = useRouter();
@@ -91,6 +93,10 @@ export default function MeScreen() {
     Linking.openURL(PRIVACY_URL);
   };
 
+  const handleTermsOfUse = () => {
+    Linking.openURL(TERMS_URL);
+  };
+
   if (!isAuthenticated || !user) return null;
 
   const initials = user.name
@@ -167,6 +173,12 @@ export default function MeScreen() {
               icon="document-text-outline"
               label="Privacy Policy"
               onPress={handlePrivacyPolicy}
+            />
+            <View style={styles.separator} />
+            <MenuItem
+              icon="reader-outline"
+              label="Terms of Use"
+              onPress={handleTermsOfUse}
             />
           </View>
         </View>
