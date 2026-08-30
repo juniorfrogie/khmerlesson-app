@@ -16,8 +16,14 @@ export default function Index() {
 
   useEffect(() => {
     (async () => {
+      // Auth MUST resolve first: progressStore/quizScoreStore read the
+      // active user identity (see src/shared/utils/identityNamespace.ts) at
+      // the moment their own hydrate() runs, to load the right namespaced
+      // data. Running them in the same Promise.all as auth would race —
+      // they could read the still-default "no user" identity before
+      // hydrate() finishes restoring the real one.
+      await hydrate();
       await Promise.all([
-        hydrate(),
         useProgressStore.getState().hydrate(),
         useSubscriptionStore.getState().hydrate(),
         useQuizScoreStore.getState().hydrate(),
