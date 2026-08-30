@@ -85,7 +85,11 @@ export async function signInWithApple(): Promise<{ user: User; tokens: AuthToken
     verifyBody,
   );
 
-  console.log('[Apple] verify response:', JSON.stringify(verifyResponse));
+  console.log('[Apple] verify response received', {
+    hasToken: !!verifyResponse?.token,
+    hasUser: !!verifyResponse?.user,
+    hasEmail: !!(verifyResponse?.email ?? verifyResponse?.user?.email),
+  });
 
   // If verify-apple-id-token returned a complete session (existing user), use it directly.
   if (verifyResponse?.token) {

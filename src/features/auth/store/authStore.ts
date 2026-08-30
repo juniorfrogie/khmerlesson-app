@@ -2,9 +2,32 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiPost } from '@/src/services/api';
 import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
+import { logger, newTraceId } from '@/src/shared/utils/logger';
 import type { User, AuthTokens } from '../types';
 
 const AUTH_STORAGE_KEY = 'auth_state';
+
+// A token within this many seconds of its `exp` is treated as expired, so a
+// proactive refresh has a chance to land before the server would also reject it.
+const EXPIRY_SKEW_SECONDS = 30;
+
+function decodeExpiry(accessToken: string | undefined): number | null {
+  try {
+    const payload = JSON.parse(atob(accessToken?.split('.')[1] ?? ''));
+    return typeof payload?.exp === 'number' ? payload.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+// No `exp` claim or an undecodable token isn't treated as "expired" here —
+// only a token whose exp has actually passed triggers a refresh attempt;
+// anything else is left for the server (and the api.ts interceptor) to judge.
+function isExpiredOrExpiringSoon(accessToken: string | undefined): boolean {
+  const exp = decodeExpiry(accessToken);
+  if (exp === null) return false;
+  return Date.now() >= exp * 1000 - EXPIRY_SKEW_SECONDS * 1000;
+}
 
 interface AuthStore {
   user: User | null;
@@ -26,9 +49,6 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   isAuthenticated: false,
 
   setAuth: async (user, tokens) => {
-    console.log('[setAuth] user:', user);
-    console.log('[setAuth] accessToken:', tokens.accessToken);
-    console.log('[setAuth] refreshToken:', tokens.refreshToken);
     await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user, tokens }));
     set({ user, tokens, isAuthenticated: true, isGuest: false });
   },
@@ -45,21 +65,39 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     set({ user: null, tokens: null, isAuthenticated: false, isGuest: false });
   },
 
+  // App Launch -> Restore Session -> Validate/Refresh Session -> Establish
+  // Authenticated User. Called from app/index.tsx at cold start; the caller
+  // awaits this (alongside the other stores' hydrate calls) before routing,
+  // so a proactive refresh here happens before the app ever commits to
+  // (tabs) vs auth/login — the user should only land on the login screen
+  // when the stored session cannot legitimately be recovered at all.
   hydrate: async () => {
+    const traceId = newTraceId();
     try {
       const raw = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
-      if (raw) {
-        const { user, tokens } = JSON.parse(raw);
-        // Decode the JWT payload to verify which userId is actually in the token
+      if (!raw) {
+        logger.info(traceId, 'session_restore_started', { found: false });
+        return;
+      }
+
+      logger.info(traceId, 'session_restore_started', { found: true });
+      const { user, tokens } = JSON.parse(raw);
+      set({ user, tokens, isAuthenticated: true, isGuest: false });
+
+      if (isExpiredOrExpiringSoon(tokens?.accessToken)) {
         try {
-          const payload = JSON.parse(atob(tokens?.accessToken?.split('.')[1] ?? ''));
-          console.log('[hydrate] loading stored session — user.id:', user?.id, '| token.id:', payload?.id, '| token.exp:', new Date((payload?.exp ?? 0) * 1000).toISOString());
-        } catch {
-          console.log('[hydrate] loading stored session — user.id:', user?.id, '| token: (could not decode)');
+          await get().refreshTokens();
+          logger.info(traceId, 'session_restored', { refreshed: true });
+        } catch (err) {
+          // Refresh token itself invalid/expired/blacklisted — this is a
+          // genuinely dead session, not a merely-expired access token, so
+          // clear it now rather than letting every subsequent screen
+          // rediscover the same failure independently.
+          logger.warn(traceId, 'session_refresh_failed', { message: (err as Error).message });
+          await get().signOut();
         }
-        set({ user, tokens, isAuthenticated: true, isGuest: false });
       } else {
-        console.log('[hydrate] no stored session found');
+        logger.info(traceId, 'session_restored', { refreshed: false });
       }
     } catch {
       // ignore corrupt storage

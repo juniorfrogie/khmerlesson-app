@@ -129,26 +129,20 @@ Investigated 2026-08-30. Four coordinated objectives: (1) auth/session reliabili
 
 Current architecture: Zustand store (`src/features/auth/store/authStore.ts`) persisted as plain JSON to `AsyncStorage` key `auth_state` (unencrypted). `hydrate()` just replays whatever was stored, with no expiry check. `refreshTokens()` exists and correctly rotates the refresh token but is invoked from exactly one call site (mid-purchase). `app/index.tsx:16-38` hydrates auth/progress/subscription/quiz stores in parallel at cold start and routes based on `isAuthenticated`/`isGuest` with no validation step in between.
 
-* [ ] Add a token-refresh interceptor to the shared API layer
-  * Current behavior: `apiFetch`/`apiPost`/`apiPostForm` (`src/services/api.ts`) throw on any non-2xx, including `401 { code: "TOKEN_EXPIRED" }`, with no refresh attempt. Only `purchaseService.ts:113-121` catches this and retries. `useCourseLessons`/`useLessonDetail` detect the same code and redirect to `/auth/login` instead of retrying.
-  * Target behavior: on `TOKEN_EXPIRED`, transparently call `refreshTokens()`, retry the original request once with the new token, and only surface `forbiddenReason: 'tokenExpired'` / redirect to login if the refresh call itself fails.
-  * Likely affected components: `src/services/api.ts`, `src/features/auth/store/authStore.ts`, `src/services/hooks/useCourseLessons.ts`, `src/services/hooks/useLessonDetail.ts`, any future authenticated hook.
-  * Dependencies: none — foundational for the rest of this phase.
-  * Acceptance criteria: a request made with an expired-but-refreshable access token succeeds transparently; the user is only routed to `/auth/login` when the refresh token itself is invalid, expired, or blacklisted.
+* [x] Add a token-refresh interceptor to the shared API layer — **done 2026-08-31**
+  * Implementation: `src/services/api.ts` — `rawApiFetch`/`rawApiPost`/`rawApiDelete`/`rawApiPostForm` hold the original request bodies; the exported `apiFetch`/`apiPost`/`apiDelete`/`apiPostForm` now wrap them with a new `withTokenRefresh()` helper that retries once on `code === 'TOKEN_EXPIRED'` after calling a new `refreshAccessToken()`, and rethrows the original error unchanged if the refresh itself fails (so `useCourseLessons`/`useLessonDetail`'s existing `forbiddenReason: 'tokenExpired'` handling still fires correctly for a genuinely dead session).
+  * `refreshAccessToken()` reaches `authStore` via a deferred `require()` (`getAuthStore()`), matching the existing cycle-avoidance pattern already used by `logger.ts` (`authStore.ts` imports `api.ts` at the top level, so a top-level import the other way would cycle).
+  * Verified: `./node_modules/.bin/tsc --noEmit` clean; `expo lint` shows no new errors/warnings (one new harmless "unused eslint-disable" warning, consistent with the same pre-existing pattern already present throughout `purchaseService.ts`).
 
-* [ ] Deduplicate concurrent refresh calls
-  * Current behavior: not yet an issue (no interceptor exists), but once the item above lands, simultaneous authenticated calls (e.g. the `Promise.all` in `app/index.tsx:18-23`) would each independently call `refreshTokens()`, racing to overwrite `auth_state` — `authStore.ts:78`'s `refreshToken: result.refreshToken ?? tokens.refreshToken` assumes the token used in-flight is still current.
-  * Target behavior: a single in-flight refresh promise shared across all callers; concurrent requests await the same refresh and retry after it resolves.
-  * Likely affected components: `src/features/auth/store/authStore.ts` (`refreshTokens`), `src/services/api.ts`.
-  * Dependencies: token-refresh interceptor (above).
-  * Acceptance criteria: triggering several authenticated requests at once with an expired token results in exactly one call to `POST /api/auth/refresh-token`.
+* [x] Deduplicate concurrent refresh calls — **done 2026-08-31, same change as above**
+  * Implementation: `refreshAccessToken()` in `src/services/api.ts` holds a module-level `refreshPromise`; concurrent callers hitting `TOKEN_EXPIRED` at the same time all await the same in-flight promise instead of each calling `refreshTokens()` independently. Cleared in a `.finally()` once the refresh settles.
+  * Note: a `return refreshPromise ?? Promise.resolve(null)` was needed instead of a bare `return refreshPromise` — TypeScript won't narrow a module-level variable past a closure that reassigns it (the `.finally` callback), so the declared-nullable type leaks through; the `??` fallback is a no-op at runtime (the promise is always set by that point) but keeps the function's return type correct without fighting the narrowing limitation.
 
-* [ ] Validate/refresh session proactively at startup
-  * Current behavior: `app/index.tsx:16-38` hydrates stores and routes to `(tabs)`/`auth/login` based on `isAuthenticated`/`isGuest` alone — it never checks whether the stored access token is expired, and never calls `refreshTokens()`. `authStore.ts:54-56` already decodes the JWT `exp` for a debug log — the same decode can drive a real expiry check.
-  * Target behavior: `App Launch → Restore Session → Validate/Refresh Session → Establish Authenticated User → Load User Data → Open Application`. Add an explicit auth status (`'idle' | 'restoring' | 'ready' | 'unauthenticated'`) so routing doesn't commit until restoration actually resolves.
-  * Likely affected components: `app/index.tsx`, `src/features/auth/store/authStore.ts`.
-  * Dependencies: interceptor + dedup (above).
-  * Acceptance criteria: a user is never routed to `/auth/login` solely because a merely-expired (not invalid) access token was stored.
+* [x] Validate/refresh session proactively at startup — **done 2026-08-31**
+  * Implementation: `src/features/auth/store/authStore.ts`'s `hydrate()` now decodes the stored access token's `exp` claim (`isExpiredOrExpiringSoon()`, 30s skew) after loading it from `AsyncStorage`, and — if expired or expiring imminently — calls `refreshTokens()` before returning. `app/index.tsx` already `await`s `hydrate()` inside its startup `Promise.all` before routing, so this required no changes to `app/index.tsx` itself: the existing await already gates routing on the (now more thorough) hydrate promise.
+  * Scoped down from the original plan: did **not** add a separate `authStatus` enum to the store — the existing `await Promise.all([hydrate(), ...])` → route pattern in `app/index.tsx` already provides the gating the enum was meant to provide, and `isAuthenticated`/`isGuest` remain suffient for every current call site. Revisit only if a future screen needs to distinguish "still restoring" from "done," which none does today.
+  * Likely affected components actually touched: `src/features/auth/store/authStore.ts` only.
+  * Verified: `tsc --noEmit` clean.
 
 * [ ] Foreground/background session revalidation
   * Current behavior: `[NEEDS INVESTIGATION]` — no `AppState` listener for auth was found in `app/_layout.tsx` or elsewhere; session state is only touched at cold start.
@@ -164,19 +158,13 @@ Current architecture: Zustand store (`src/features/auth/store/authStore.ts`) per
   * Dependencies: none, but coordinate with the items above since the storage shape changes.
   * Acceptance criteria: the refresh token is not recoverable by directly reading the app's AsyncStorage sandbox after login.
 
-* [ ] Remove raw token values from console logs
-  * Current behavior: `authStore.ts:29-31` logs the full `user`, `accessToken`, and `refreshToken` on every `setAuth()`; `service.ts:88` logs the full Apple verify response. These are `console.log`, not the trace-id `logger` — they don't reach `debug_logs`, but persist in Metro/device logs.
-  * Target behavior: remove or redact — log presence/length/expiry, never raw token values.
-  * Likely affected components: `src/features/auth/store/authStore.ts:29-31`, `src/features/auth/service.ts:88`.
-  * Dependencies: none — ship independently, low risk.
-  * Acceptance criteria: no access/refresh token value appears in console output on sign-in.
+* [x] Remove raw token values from console logs — **done 2026-08-31**
+  * Implementation: `authStore.ts`'s `setAuth()` and `hydrate()` no longer log user/token payloads at all (superseded by the structured `logger.info(...)` calls added for the lifecycle-events item below, which log only booleans/counts). `service.ts:88`'s Apple verify-response log now logs `{ hasToken, hasUser, hasEmail }` booleans instead of `JSON.stringify(verifyResponse)`.
+  * Verified: `grep -n "console.log" src/features/auth/store/authStore.ts` shows none left; `service.ts`'s remaining `console.error` calls (sign-in failure paths) already only logged error objects, not tokens — unchanged.
 
-* [ ] Wire session-lifecycle events into the existing debug-log pipeline
-  * Current behavior: the trace-id logging pipeline (`src/shared/utils/logger.ts` → `debug_logs`) is proven (used for purchase-flow tracing) but not used for auth lifecycle at all today.
-  * Target behavior: emit `session_restore_started`, `session_restored`, `session_refresh_failed` etc. through the existing `logger`, matching the naming convention already used in `purchaseService.ts`.
-  * Likely affected components: `app/index.tsx`, `src/features/auth/store/authStore.ts`.
-  * Dependencies: proactive startup validation (above).
-  * Acceptance criteria: a `traceId` for a session-restore-and-refresh cycle can be queried in `debug_logs` end-to-end, the same way a purchase trace can today.
+* [x] Wire session-lifecycle events into the existing debug-log pipeline — **done 2026-08-31, same change as the startup-validation item**
+  * Implementation: `authStore.ts`'s `hydrate()` emits `session_restore_started` (with `found: boolean`), then `session_restored` (with `refreshed: boolean`) or `session_refresh_failed` (with the error message) through the existing `logger` from `src/shared/utils/logger.ts`, using a fresh `traceId` per restore attempt — flows into `debug_logs` exactly like existing purchase-flow traces.
+  * Likely affected components actually touched: `src/features/auth/store/authStore.ts` only (no `app/index.tsx` change needed, per the note above).
 
 * [ ] Auth regression QA pass
   * Current behavior: no automated coverage exists; per the Testing decision (P2 below), the refresh/dedup logic itself gets focused unit tests, but the end-to-end flow stays manual QA.
