@@ -164,64 +164,42 @@ Current architecture: Zustand store (`src/features/auth/store/authStore.ts`) per
   * Implementation: `authStore.ts`'s `hydrate()` emits `session_restore_started` (with `found: boolean`), then `session_restored` (with `refreshed: boolean`) or `session_refresh_failed` (with the error message) through the existing `logger` from `src/shared/utils/logger.ts`, using a fresh `traceId` per restore attempt — flows into `debug_logs` exactly like existing purchase-flow traces.
   * Likely affected components actually touched: `src/features/auth/store/authStore.ts` only (no `app/index.tsx` change needed, per the note above).
 
-* [ ] Auth regression QA pass
-  * Current behavior: no automated coverage exists; per the Testing decision (P2 below), the refresh/dedup logic itself gets focused unit tests, but the end-to-end flow stays manual QA.
-  * Target behavior: manual checklist — fresh login (Google/Apple/Guest) → force-expire the access token → confirm silent refresh → let the refresh token itself expire → confirm graceful redirect to login → confirm logout clears `auth_state` correctly and does not incorrectly clear/leak other stores (see the account-boundary namespacing item under Account-Scoped Progress Cloud Sync below).
-  * Likely affected components: N/A (QA).
-  * Dependencies: all items above.
-  * Acceptance criteria: all scenarios in the checklist behave per their target descriptions above.
+* [BLOCKED — HUMAN ACTION REQUIRED: no physical device or simulator/emulator is available in this environment] Auth regression QA pass
+  * All code-side Phase 1 items above are implemented and pass `tsc`/`eslint`; the pure-logic pieces (token-refresh retry/dedup) also get focused unit test coverage — see the Testing item under P2. What remains is genuinely device-dependent: real Keychain/Keystore behavior, real background/foreground transitions, and real Google/Apple sign-in flows can't be exercised from this sandboxed environment.
+  * Target behavior (unchanged): manual checklist — fresh login (Google/Apple/Guest) → force-expire the access token → confirm silent refresh → let the refresh token itself expire → confirm graceful redirect to login → confirm logout clears `auth_state`/SecureStore correctly and does not incorrectly clear/leak other stores.
+  * Action needed from a human: run this checklist on a real device or simulator once these commits are pulled.
 
 #### Subscription Restoration & Synchronization
 
 Current architecture: `useMySubscription` (`src/services/hooks/useMySubscription.ts`) is the only thing that calls `GET /api/v1/subscriptions/me` and writes into `useSubscriptionStore`; it's mounted in exactly two places — `app/(tabs)/me.tsx:21` and `app/subscription/index.tsx:37`. `subscriptionStore.hydrate()` (`src/features/subscriptions/store/subscriptionStore.ts:27-36`) only replays the last cached AsyncStorage value — no network call. `app/auth/login.tsx:36-43`'s `prefetchSubscription` DOES sync right after a **fresh** Google/Apple login — the gap is specifically session **restoration** (returning with an already-persisted session) and background return. `purchaseService.ts`'s `reconcileAvailablePurchases()` (only invoked via `initPurchaseFlow()` at `app/subscription/index.tsx:74` on mount) is what the task calls "visiting the Plan screen causes a backend subscription check." Course access itself (`hasAccess`/`comingSoon`) is computed server-side per request, not derived from the local store — see the root-cause finding above tying this to Phase 1.
 
-* [ ] Extract subscription sync into a reusable function
-  * Current behavior: the only live-sync logic lives inside the `useMySubscription` hook, only callable from a mounted component.
-  * Target behavior: a `syncSubscription(accessToken)` function (new `src/features/subscriptions/service.ts`) wrapping the same fetch + store write, callable from anywhere; `useMySubscription` becomes a thin wrapper around it.
-  * Likely affected components: new `src/features/subscriptions/service.ts`, `src/services/hooks/useMySubscription.ts`.
-  * Dependencies: none.
-  * Acceptance criteria: subscription sync can be triggered outside of a mounted hook (e.g. from `app/index.tsx`).
+* [x] Extract subscription sync into a reusable function — **done 2026-08-31**
+  * Implementation: new `src/features/subscriptions/service.ts` exports `syncSubscription(accessToken)`, wrapping the fetch + store write. `useMySubscription.ts` is now a thin wrapper around it; `app/auth/login.tsx`'s `prefetchSubscription` and `app/index.tsx`'s restore-time sync (below) both call it directly.
 
-* [ ] Trigger subscription sync on session restoration
-  * Current behavior: `app/index.tsx` never makes a subscription network call — only the passive `hydrate()` cache replay.
-  * Target behavior: after auth restoration resolves with a valid/refreshed token, call `syncSubscription()` before routing into `(tabs)`, mirroring what `login.tsx`'s `prefetchSubscription` already does for a fresh login.
-  * Likely affected components: `app/index.tsx`.
-  * Dependencies: Phase 1's interceptor + startup validation; the extracted sync function above.
-  * Acceptance criteria: an existing subscriber who force-quits and reopens the app (without visiting the Plan screen) sees correct course access immediately.
+* [x] Trigger subscription sync on session restoration — **done 2026-08-31**
+  * Implementation: `app/index.tsx` calls `syncSubscription(tokens.accessToken)` right after the startup `Promise.all` resolves (so it runs with an already-refreshed token, per Phase 1), for any authenticated (non-guest) session. Deliberately **not awaited** before routing — this shouldn't add a network round trip to every cold start; it updates the shared store in the background, and the new `status` field (below) means no screen misreads "still syncing" as "no subscription" in the meantime.
+  * Likely affected components actually touched: `app/index.tsx` only.
 
-* [ ] Introduce an explicit subscription status distinct from "no subscription"
-  * Current behavior: `subscriptionStore.mySubscription: Subscription | null` overloads `null` to mean both "not loaded yet" and "confirmed no subscription" — e.g. the trial-eligibility check in `app/subscription/index.tsx` (progress-tracker `D2`) reads `mySubscription === null` as "eligible for trial," which is also true before the first fetch resolves.
-  * Target behavior: add `status: 'unknown' | 'loading' | 'active' | 'inactive' | 'error'`, set explicitly by every write path (`hydrate`, `setSubscription`, `clearSubscription`, and the new sync function). UI must treat `unknown`/`loading` as "don't lock content," never as "no subscription" — per the task's explicit warning against conflating the two.
-  * Likely affected components: `src/features/subscriptions/store/subscriptionStore.ts`, `src/features/subscriptions/types.ts`, `app/subscription/index.tsx`, `app/(tabs)/me.tsx`.
-  * Dependencies: extracted sync function.
-  * Acceptance criteria: no UI ever shows "locked"/"not subscribed" state while a sync is genuinely still in flight.
+* [x] Introduce an explicit subscription status distinct from "no subscription" — **done 2026-08-31**
+  * Implementation: `subscriptionStore.ts` gained a `status: 'unknown' | 'loading' | 'active' | 'inactive' | 'error'` field (named `SubscriptionSyncStatus` to avoid colliding with the existing `Subscription['status']` type in `types.ts`, which is the server's `trial`/`active`/`expired`/`cancelled`), plus an `error: string | null` field. Every write path (`setLoading`, `setSubscription`, `setError`, `clearSubscription`, `hydrate`) sets it explicitly. Persistence format changed from a raw `Subscription | null` to `{ mySubscription, status }`; `hydrate()` reads both the new shape and the legacy raw shape for backward compatibility with already-installed app versions.
+  * Fixed the concrete conflation the roadmap flagged: `app/subscription/index.tsx`'s `isTrialEligible` now reads `(status === 'inactive' || status === 'active') && mySubscription === null` instead of the old `!subscriptionLoading && mySubscription === null` — a sync that hasn't completed yet (`status === 'unknown'`/`'loading'`) can no longer make the trial banner flash on and then off.
+  * `app/(tabs)/me.tsx` was left unchanged — it only reads `subscription` (not the old `loading` boolean), so it's unaffected by this and needed no fix.
+  * Likely affected components actually touched: `src/features/subscriptions/store/subscriptionStore.ts`, `src/services/hooks/useMySubscription.ts`, `app/subscription/index.tsx`.
 
-* [ ] Refresh course access after subscription sync resolves
-  * Current behavior: `useCourses` (`src/services/hooks/useCourses.ts`) already refetches on `accessToken` change and on every tab focus (`app/(tabs)/index.tsx:31-38`), so this may partly self-heal once the items above land.
-  * Target behavior: `[NEEDS INVESTIGATION]` whether an explicit `refetch()` call is still needed right after `syncSubscription()` resolves (e.g. before any focus event has fired on first render).
-  * Likely affected components: `app/(tabs)/index.tsx`, wherever `syncSubscription` is called from.
-  * Dependencies: the two items above.
-  * Acceptance criteria: course lock state visibly updates within one render of a subscription sync completing, without requiring a manual tab switch.
+* [x] Refresh course access after subscription sync resolves — **resolved as a no-op, 2026-08-31**
+  * Finding: since subscription sync now happens (or is already in flight) *before* `app/index.tsx` routes into `(tabs)` (previous item), `useCourses`'s own mount-time fetch (`src/services/hooks/useCourses.ts`) already runs with a token whose entitlement state is current by the time the course list screen exists — no extra explicit `refetch()` call was needed. Verified by inspection, not by running the app (no simulator available in this environment) — flagged as a QA check, not a further code change.
 
-* [ ] Manual "Restore Purchases" affordance
-  * Current behavior: restoration today is implicit only — `reconcileAvailablePurchases()` runs automatically on `initPurchaseFlow()` and swallows its own errors silently (`purchaseService.ts:237`, `.catch(() => {})`). No explicit user-facing button exists.
-  * Target behavior: `[NEEDS INVESTIGATION]` confirm whether store review requires a visible "Restore Purchases" affordance distinct from the automatic reconcile; if so, add one to `app/subscription/index.tsx` with real loading/success/failure feedback.
-  * Likely affected components: `app/subscription/index.tsx`, `src/features/courses/service/purchaseService.ts`.
-  * Dependencies: none directly; shares code with Phase 4.3's Android restore path.
-  * Acceptance criteria: a user can trigger restoration on demand and see the outcome, not just have it happen silently on screen mount.
+* [x] Manual "Restore Purchases" affordance — **done 2026-08-31, decided to add it**
+  * Implementation: `reconcileAvailablePurchases` in `purchaseService.ts` is now `export`ed (only the export keyword changed — **its internals were deliberately left untouched**, since `context/subscription-debugging.md` flags this file as fragile, recently-fixed purchase-flow code). `app/subscription/index.tsx` adds a "Restore Purchases" text button below the terms text (hidden when IAP is unavailable, e.g. Expo Go). Since `reconcileAvailablePurchases()` always resolves `void` and never rejects (all its error paths log and swallow internally, by design), the button infers outcome by snapshotting `mySubscription` before the call, then calling `syncSubscription()` directly afterward and comparing `id`/`status` — reports "Purchases Restored" / "Nothing to Restore" / "Restore Failed" accordingly, with a loading spinner while in flight.
+  * Likely affected components actually touched: `src/features/courses/service/purchaseService.ts` (one-line export), `app/subscription/index.tsx`.
 
-* [ ] Subscription sync error handling
-  * Current behavior: `useMySubscription`'s `.catch()` only sets a local `error` string on the hook — it never marks the store itself as errored, so a failed sync is indistinguishable from a cached success.
-  * Target behavior: wire failures into the new `status: 'error'` state; on error, fall back to the last-known-good cached value rather than re-locking content.
-  * Likely affected components: `src/features/subscriptions/store/subscriptionStore.ts`, `src/services/hooks/useMySubscription.ts`.
-  * Dependencies: explicit status field (above).
-  * Acceptance criteria: a network failure during sync never causes previously-unlocked content to appear locked.
+* [x] Subscription sync error handling — **done 2026-08-31, same change as the status-field item**
+  * Implementation: `syncSubscription()`'s catch block calls `store.setError(message)`, which sets `status: 'error'` while leaving `mySubscription` (and its previously-derived `status`, before the error) untouched — a failed sync never downgrades previously-confirmed access into "locked."
 
-* [ ] Subscription sync diagnostics
-  * Target behavior: emit `subscription_sync_started` / `subscription_active` / `subscription_sync_failed` through the existing `logger`, mirroring the naming already used in `purchaseService.ts` (e.g. `'reconciling newest entitlement found on init'`).
-  * Likely affected components: new `src/features/subscriptions/service.ts`.
-  * Dependencies: extracted sync function.
-  * Acceptance criteria: a subscription-sync trace is queryable in `debug_logs` by `traceId`.
+* [x] Subscription sync diagnostics — **done 2026-08-31, same change**
+  * Implementation: `syncSubscription()` emits `subscription_sync_started`, then `subscription_active` / `subscription_sync_completed_none` (with the server `status`), or `subscription_sync_failed`, through the existing `logger` — same `debug_logs` pipeline as everything else.
+
+Verified (all items above): `tsc --noEmit` and `eslint` clean across every touched file; only pre-existing warnings remain, identical to the pre-change baseline.
 
 #### Account-Scoped Progress Cloud Sync (Quiz Scores + Lesson Completion)
 

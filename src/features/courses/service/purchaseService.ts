@@ -178,7 +178,7 @@ function handlePurchaseError(error: any): void {
 // this user (explicit purchase) or an app restart naturally resets it.
 const deniedTransactionIds = new Set<string>();
 
-async function reconcileAvailablePurchases(): Promise<void> {
+export async function reconcileAvailablePurchases(): Promise<void> {
   const accessToken = useAuthStore.getState().tokens?.accessToken;
   if (!accessToken) return;
 
