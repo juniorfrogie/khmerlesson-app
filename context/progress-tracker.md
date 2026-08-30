@@ -149,12 +149,12 @@ Current architecture: Zustand store (`src/features/auth/store/authStore.ts`) per
   * `revalidateIfExpiring()` is a no-op for guests/unauthenticated sessions (`isAuthenticated`/`tokens` guard) — only ever acts on an actual signed-in session.
   * Verified: `tsc --noEmit` and `eslint` both clean on the touched files.
 
-* [ ] Move auth tokens to secure storage
-  * Current behavior: `auth_state` (user + `accessToken` + `refreshToken`) lives in plain `AsyncStorage` (`authStore.ts:7,32,50`) — unencrypted on both platforms. `expo-secure-store` is not in `package.json`.
-  * Target behavior: move at least the refresh token (ideally both tokens) to `expo-secure-store` (Keychain/Keystore-backed); non-sensitive `user` profile can stay in AsyncStorage.
-  * Likely affected components: `src/features/auth/store/authStore.ts`, `package.json` (new dependency).
-  * Dependencies: none, but coordinate with the items above since the storage shape changes.
-  * Acceptance criteria: the refresh token is not recoverable by directly reading the app's AsyncStorage sandbox after login.
+* [x] Move auth tokens to secure storage — **done 2026-08-31**
+  * Implementation: added `expo-secure-store` (`npx expo install expo-secure-store`, which also registered its config plugin in `app.json` automatically). New `src/features/auth/store/secureTokenStorage.ts` wraps `SecureStore.setItemAsync`/`getItemAsync`/`deleteItemAsync` under key `auth_tokens_secure`, falling back to `AsyncStorage` only on `Platform.OS === 'web'` (SecureStore has no web equivalent, and this app ships a `web` output target per `app.json`). `authStore.ts`'s `AUTH_STORAGE_KEY` (`auth_state`) now holds only the non-sensitive `{ user }` profile; `setAuth`/`refreshTokens`/`signOut` read/write tokens through the new module instead.
+  * Backward compatibility: `hydrate()` migrates existing installs automatically — if `SecureStore` has no tokens yet but the legacy `auth_state` blob still has a `tokens` field (pre-this-change installs), it moves them into `SecureStore` once, rewrites `auth_state` to just `{ user }`, and logs `auth_tokens_migrated_to_secure_store`. This avoids silently signing out every existing installed user on update.
+  * Likely affected components actually touched: `src/features/auth/store/authStore.ts`, new `src/features/auth/store/secureTokenStorage.ts`, `package.json`/`package-lock.json`, `app.json` (plugin auto-registered by `expo install`).
+  * Verified: `tsc --noEmit` and `eslint` clean; confirmed via `grep` that no other file reads the `auth_state` AsyncStorage key directly (only `authStore.ts` touches it).
+  * Not verified (cannot be, in this environment): actual Keychain/Keystore behavior on a real device/simulator — no device or emulator is available here. Flagged for the manual Auth regression QA pass.
 
 * [x] Remove raw token values from console logs — **done 2026-08-31**
   * Implementation: `authStore.ts`'s `setAuth()` and `hydrate()` no longer log user/token payloads at all (superseded by the structured `logger.info(...)` calls added for the lifecycle-events item below, which log only booleans/counts). `service.ts:88`'s Apple verify-response log now logs `{ hasToken, hasUser, hasEmail }` booleans instead of `JSON.stringify(verifyResponse)`.

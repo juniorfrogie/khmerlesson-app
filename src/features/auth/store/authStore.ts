@@ -3,8 +3,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiPost } from '@/src/services/api';
 import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 import { logger, newTraceId } from '@/src/shared/utils/logger';
+import { setSecureTokens, getSecureTokens, clearSecureTokens } from './secureTokenStorage';
 import type { User, AuthTokens } from '../types';
 
+// Holds only the non-sensitive `user` profile — tokens live in SecureStore
+// (see secureTokenStorage.ts). Older installs persisted `{ user, tokens }`
+// together here; hydrate() migrates any such legacy blob on first load.
 const AUTH_STORAGE_KEY = 'auth_state';
 
 // A token within this many seconds of its `exp` is treated as expired, so a
@@ -76,7 +80,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   isAuthenticated: false,
 
   setAuth: async (user, tokens) => {
-    await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user, tokens }));
+    await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user }));
+    await setSecureTokens(tokens);
     set({ user, tokens, isAuthenticated: true, isGuest: false });
   },
 
@@ -86,6 +91,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   signOut: async () => {
     await AsyncStorage.removeItem(AUTH_STORAGE_KEY);
+    await clearSecureTokens();
     // The subscription belongs to the account signing out — without this, a
     // fresh login hydrates the previous user's persisted subscription state.
     useSubscriptionStore.getState().clearSubscription();
@@ -108,9 +114,24 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       }
 
       logger.info(traceId, 'session_restore_started', { found: true });
-      const { user, tokens } = JSON.parse(raw);
-      set({ user, tokens, isAuthenticated: true, isGuest: false });
+      const parsed = JSON.parse(raw) as { user: User; tokens?: AuthTokens };
+      const { user } = parsed;
 
+      let tokens = await getSecureTokens();
+      if (!tokens && parsed.tokens) {
+        // Legacy pre-SecureStore install: tokens were stored alongside the
+        // user profile in plain AsyncStorage. Migrate them into SecureStore
+        // once, then strip them out of the AsyncStorage blob so they stop
+        // lingering there unencrypted.
+        tokens = parsed.tokens;
+        await setSecureTokens(tokens);
+        await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user }));
+        logger.info(traceId, 'auth_tokens_migrated_to_secure_store', {});
+      }
+
+      if (!tokens) return; // a user record with no tokens at all — nothing to restore
+
+      set({ user, tokens, isAuthenticated: true, isGuest: false });
       await refreshIfNeeded(get, traceId, 'cold_start');
     } catch {
       // ignore corrupt storage
@@ -129,7 +150,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   refreshTokens: async () => {
-    const { tokens, user } = get();
+    const { tokens } = get();
     if (!tokens?.refreshToken) throw new Error('No refresh token available');
     const result = await apiPost<{ accessToken: string; refreshToken?: string }>(
       '/api/auth/refresh-token',
@@ -139,7 +160,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       accessToken: result.accessToken,
       refreshToken: result.refreshToken ?? tokens.refreshToken,
     };
-    await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user, tokens: newTokens }));
+    await setSecureTokens(newTokens);
     set({ tokens: newTokens });
   },
 }));
