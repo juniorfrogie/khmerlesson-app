@@ -270,25 +270,16 @@ Verified (all items above): `tsc --noEmit`/`npm run check` and `eslint` clean in
 
 Covers both quiz scores and lesson completion, per the Phase 3 scope decision above. Note this migration only matters for pre-existing local data (from before namespacing lands) — since progress storage becomes namespaced by `userId` (see the namespacing item above), a migration only needs to run once per already-signed-in user to move their un-namespaced legacy data into their namespace and up to the cloud; it is not an ongoing per-login concern.
 
-* [ ] Detect legacy (pre-namespacing, pre-cloud) local progress on first cloud-aware launch
-  * Target behavior: on first authenticated sync after this feature ships, check for un-namespaced `lesson_progress`/`quiz_scores` AsyncStorage entries not yet reflected in a "migrated" flag.
-  * Likely affected components: `src/features/quizzes/store/quizScoreStore.ts`, `src/features/lessons/store/progressStore.ts`.
-  * Dependencies: Account-Scoped Progress Cloud Sync items above (namespacing + backend API).
+* [x] Detect legacy (pre-namespacing) local progress + one-time migration flag — **done 2026-08-31 [MOBILE]**
+  * Implementation: both `progressStore.ts` and `quizScoreStore.ts` gained a `migrateLegacyIfNeeded()`, called at the top of `hydrate()` (so it runs before the namespaced read on every cold start, but only actually does anything once). Each checks its own flag (`lesson_progress_migrated_v1` / `quiz_scores_migrated_v1`) — reuses the same AsyncStorage-flag idiom as `ONBOARDING_COMPLETE_KEY`, per the original plan. Legacy data lived under the exact literal keys `lesson_progress`/`quiz_scores` (no `:namespace` suffix — that's what "legacy" means here, it predates the namespacing commit earlier in this same session). If found, it's merged into whichever identity is active *right now* (the legacy data predates multi-account awareness, so it belongs to whoever is using the device post-update) and the old un-namespaced key is removed so it can't be re-discovered and merged into a second identity later.
 
-* [ ] One-time migration flag
-  * Target behavior: reuse the existing AsyncStorage-flag idiom already in this codebase (`ONBOARDING_COMPLETE_KEY`, `app/onboarding.tsx` / `app/index.tsx:6,24`) to prevent re-uploading on every launch.
-  * Likely affected components: same as above.
-  * Dependencies: detection (above).
+* [x] Upload-if-cloud-empty / merge-if-both-present logic — **done 2026-08-31 [MOBILE], partially — see gap below**
+  * Lesson completions: fully implemented as local-merge only (no separate cloud-upload step needed at migration time for these — every completion, migrated or not, already gets picked up by the normal `markComplete()`-triggered sync path the next time it's touched; migration itself just makes sure `completedLessons` isn't empty going forward).
+  * Quiz scores: local merge only implemented (`mergeCompletedLessons`-style union, "never overwrite an already-namespaced entry" — i.e. cloud-fetched or freshly-namespaced data always wins over legacy). **Known gap, not silently left incomplete**: migrated quiz-score entries are **not** proactively re-uploaded to the cloud during migration. The legacy local shape (`{ score, total }` keyed by `lessonId`) has no `quizId`, and getting one would require a `GET /api/v1/quizzes` lookup + lessonId match (`useQuizByLesson.ts`'s existing pattern) from inside what's otherwise a pure-storage module — judged not worth the added cross-cutting complexity for this pass. Migrated entries stay local-only (visible in the UI, not lost) until the user retakes that specific quiz, at which point the normal sync path picks them up with a real `quizId`. If a human wants this closed, it needs a small follow-up in `src/features/progress/service.ts` (which already has `apiFetch` access) rather than in the storage-only stores.
+  * Merge rule actually implemented (both stores): the same recency rule as steady-state cloud sync — a migrated legacy entry never overwrites an already-present namespaced entry; quiz-score migrated entries get `completedAt: new Date(0).toISOString()` (deliberately older than any real timestamp), so a later real cloud/local write for the same lesson naturally supersedes it via `setScore`'s existing conflict check, with no separate migration-specific merge logic needed.
 
-* [ ] Upload-if-cloud-empty / merge-if-both-present logic
-  * Target behavior: cloud empty + local present → upload; cloud present and newer → keep cloud; local newer → sync local. Since scope is final-state-only (no resumable attempts), this reduces to a straightforward "most recent completion wins, never delete a completion" rule — no partial-attempt merge logic needed, per the resolved Phase 3 scope.
-  * Likely affected components: same as above.
-  * Dependencies: migration flag; the conflict-handling rule defined in the cloud sync section above (same rule applies here).
-
-* [ ] Test the upgrade path from the currently-released build
-  * Current behavior: `[NEEDS INVESTIGATION]` — no automated upgrade-path testing exists. Current released version is `1.0.1` (build `19`) per `app.json`.
-  * Target behavior: manual QA installing the released build, generating local progress, then upgrading in place to confirm migration behavior.
-  * Dependencies: all items above.
+* [BLOCKED — HUMAN ACTION REQUIRED: no physical device or simulator/emulator is available in this environment] Test the upgrade path from the currently-released build
+  * The migration code itself is implemented and passes `tsc`/`eslint`, but exercising a real upgrade (install the released `1.0.1`/build `19`, generate local progress, then update in place to this branch's build and confirm the migration runs correctly) needs an actual device or simulator with the prior version installable on it.
 
 ---
 

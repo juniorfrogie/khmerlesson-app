@@ -3,6 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { currentIdentityNamespace, subscribeToIdentityChange } from '@/src/shared/utils/identityNamespace';
 
 const STORAGE_KEY_PREFIX = 'quiz_scores';
+// Pre-namespacing installs stored everything under this exact literal key
+// (no `:namespace` suffix) — see progressStore.ts for the full rationale.
+const LEGACY_STORAGE_KEY = STORAGE_KEY_PREFIX;
+const LEGACY_MIGRATION_FLAG_KEY = 'quiz_scores_migrated_v1';
 
 interface ScoreEntry {
   quizId: number;
@@ -45,6 +49,7 @@ export const useQuizScoreStore = create<QuizScoreStore>((set, get) => ({
   hydrate: async () => {
     activeNamespace = currentIdentityNamespace();
     try {
+      await migrateLegacyIfNeeded();
       const raw = await AsyncStorage.getItem(storageKey(activeNamespace));
       set({ scores: raw ? (JSON.parse(raw) as Record<string, ScoreEntry>) : {} });
     } catch {
@@ -55,6 +60,50 @@ export const useQuizScoreStore = create<QuizScoreStore>((set, get) => ({
 
 function storageKey(namespace: string): string {
   return `${STORAGE_KEY_PREFIX}:${namespace}`;
+}
+
+// One-time migration — see progressStore.ts's twin function for the full
+// rationale. Legacy entries have no `quizId` (the pre-namespacing shape was
+// just `{ score, total }`, keyed by lessonId) and no `completedAt`, so
+// migrated entries get quizId -1 (an explicit "unknown/legacy" sentinel —
+// harmless, since nothing reads it except a future sync payload, and
+// retaking that quiz overwrites it with the real quizId) and completedAt of
+// the epoch (deliberately older than any real timestamp, so a genuine cloud
+// or local write for the same lesson naturally takes precedence via
+// setScore's own recency check, rather than needing special-case logic here).
+//
+// Known gap: migrated entries are NOT proactively re-uploaded to the cloud
+// here (would need a lessonId→quizId lookup this storage-only module
+// doesn't have a clean way to make) — they stay local-only until the user
+// retakes that quiz, at which point the real sync path picks them up
+// normally. Flagged in context/progress-tracker.md rather than silently
+// left incomplete.
+async function migrateLegacyIfNeeded(): Promise<void> {
+  try {
+    const alreadyMigrated = await AsyncStorage.getItem(LEGACY_MIGRATION_FLAG_KEY);
+    if (alreadyMigrated) return;
+
+    const legacyRaw = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacy = JSON.parse(legacyRaw) as Record<string, { score: number; total: number }>;
+      const existingRaw = await AsyncStorage.getItem(storageKey(activeNamespace));
+      const existing = existingRaw ? (JSON.parse(existingRaw) as Record<string, ScoreEntry>) : {};
+
+      const merged: Record<string, ScoreEntry> = { ...existing };
+      for (const [lessonId, entry] of Object.entries(legacy)) {
+        if (merged[lessonId]) continue; // this identity already has a real (namespaced) entry — keep it
+        merged[lessonId] = { quizId: -1, score: entry.score, total: entry.total, completedAt: new Date(0).toISOString() };
+      }
+
+      await AsyncStorage.setItem(storageKey(activeNamespace), JSON.stringify(merged));
+      await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
+    }
+
+    await AsyncStorage.setItem(LEGACY_MIGRATION_FLAG_KEY, 'true');
+  } catch {
+    // Best-effort — a migration failure must not block hydrate() from
+    // loading whatever namespaced data already exists.
+  }
 }
 
 subscribeToIdentityChange(() => {

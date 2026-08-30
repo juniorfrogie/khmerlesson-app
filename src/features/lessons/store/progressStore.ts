@@ -3,6 +3,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { currentIdentityNamespace, subscribeToIdentityChange } from '@/src/shared/utils/identityNamespace';
 
 const STORAGE_KEY_PREFIX = 'lesson_progress';
+// Pre-namespacing installs stored everything under this exact literal key
+// (no `:namespace` suffix) — see the account-boundary fix this superseded.
+const LEGACY_STORAGE_KEY = STORAGE_KEY_PREFIX;
+const LEGACY_MIGRATION_FLAG_KEY = 'lesson_progress_migrated_v1';
 
 export interface LastAccessed {
   courseId: number;
@@ -50,6 +54,7 @@ export const useProgressStore = create<ProgressStore>((set, get) => ({
   hydrate: async () => {
     activeNamespace = currentIdentityNamespace();
     try {
+      await migrateLegacyIfNeeded();
       const raw = await AsyncStorage.getItem(storageKey(activeNamespace));
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -75,6 +80,59 @@ function persist(state: Pick<ProgressStore, 'completedLessons' | 'lastAccessed'>
     completedLessons: state.completedLessons,
     lastAccessed: state.lastAccessed,
   })).catch(() => {});
+}
+
+// One-time migration for installs that had progress before per-user
+// namespacing existed: the legacy data predates multi-account awareness, so
+// it belongs to whoever is using the device right now (the active
+// namespace at the moment this runs) — merged in, never overwriting
+// anything already present for that identity. Runs at most once per
+// device, guarded by LEGACY_MIGRATION_FLAG_KEY, regardless of how many
+// identities hydrate() afterward.
+async function migrateLegacyIfNeeded(): Promise<void> {
+  try {
+    const alreadyMigrated = await AsyncStorage.getItem(LEGACY_MIGRATION_FLAG_KEY);
+    if (alreadyMigrated) return;
+
+    const legacyRaw = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacy = JSON.parse(legacyRaw) as {
+        completedLessons?: Record<number, number[]>;
+        lastAccessed?: LastAccessed | null;
+      };
+      const existingRaw = await AsyncStorage.getItem(storageKey(activeNamespace));
+      const existing = existingRaw
+        ? (JSON.parse(existingRaw) as { completedLessons?: Record<number, number[]>; lastAccessed?: LastAccessed | null })
+        : {};
+
+      const merged = {
+        completedLessons: mergeCompletedLessons(existing.completedLessons ?? {}, legacy.completedLessons ?? {}),
+        // Prefer whatever's already namespaced (this identity's own more
+        // recent activity) over the legacy value.
+        lastAccessed: existing.lastAccessed ?? legacy.lastAccessed ?? null,
+      };
+      await AsyncStorage.setItem(storageKey(activeNamespace), JSON.stringify(merged));
+      await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
+    }
+
+    await AsyncStorage.setItem(LEGACY_MIGRATION_FLAG_KEY, 'true');
+  } catch {
+    // Best-effort — a migration failure must not block hydrate() from
+    // loading whatever namespaced data already exists.
+  }
+}
+
+function mergeCompletedLessons(
+  a: Record<number, number[]>,
+  b: Record<number, number[]>,
+): Record<number, number[]> {
+  const merged: Record<number, number[]> = { ...a };
+  for (const [courseIdStr, lessonIds] of Object.entries(b)) {
+    const courseId = Number(courseIdStr);
+    const existing = merged[courseId] ?? [];
+    merged[courseId] = Array.from(new Set([...existing, ...lessonIds]));
+  }
+  return merged;
 }
 
 // This is what actually fixes the account-boundary bug: rather than relying
