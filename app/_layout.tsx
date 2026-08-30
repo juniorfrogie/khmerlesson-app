@@ -6,6 +6,7 @@ import 'react-native-reanimated';
 import { Colors } from '@/src/shared/theme';
 import { startLogFlushing } from '@/src/shared/utils/logger';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
+import { flushPendingProgress } from '@/src/features/progress/service';
 
 export default function RootLayout() {
   useEffect(() => {
@@ -14,6 +15,12 @@ export default function RootLayout() {
     const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active') {
         useAuthStore.getState().revalidateIfExpiring().catch(() => {});
+        // Any quiz/lesson completions made while offline (or backgrounded
+        // through a transient failure) queue locally — see
+        // src/features/progress/service.ts. Foreground return is a
+        // reasonable point to assume connectivity may have come back.
+        const accessToken = useAuthStore.getState().tokens?.accessToken;
+        if (accessToken) flushPendingProgress(accessToken).catch(() => {});
       }
     });
     return () => subscription.remove();

@@ -5,13 +5,15 @@ import { currentIdentityNamespace, subscribeToIdentityChange } from '@/src/share
 const STORAGE_KEY_PREFIX = 'quiz_scores';
 
 interface ScoreEntry {
+  quizId: number;
   score: number;
   total: number;
+  completedAt: string; // ISO 8601 — lets setScore resolve local-vs-cloud conflicts by recency
 }
 
 interface QuizScoreStore {
-  scores: Record<string, ScoreEntry>;
-  setScore: (lessonId: string, score: number, total: number) => void;
+  scores: Record<string, ScoreEntry>; // keyed by lessonId (string)
+  setScore: (lessonId: string, quizId: number, score: number, total: number, completedAt?: string) => void;
   getScore: (lessonId: string) => ScoreEntry | undefined;
   hydrate: () => Promise<void>;
 }
@@ -23,8 +25,17 @@ let activeNamespace = currentIdentityNamespace();
 export const useQuizScoreStore = create<QuizScoreStore>((set, get) => ({
   scores: {},
 
-  setScore: (lessonId, score, total) => {
-    const updated = { ...get().scores, [lessonId]: { score, total } };
+  // `completedAt` defaults to now — always correct for a fresh local
+  // completion. When called with an explicit (older) completedAt — e.g. by
+  // the cloud-progress merge in src/features/progress/service.ts — an
+  // existing local entry that's already newer is kept as-is. This is what
+  // makes the cloud merge safe to call unconditionally on every session
+  // restore without first checking whether a fresher local write (possibly
+  // still queued for sync) exists.
+  setScore: (lessonId, quizId, score, total, completedAt = new Date().toISOString()) => {
+    const existing = get().scores[lessonId];
+    if (existing && existing.completedAt > completedAt) return;
+    const updated = { ...get().scores, [lessonId]: { quizId, score, total, completedAt } };
     set({ scores: updated });
     AsyncStorage.setItem(storageKey(activeNamespace), JSON.stringify(updated)).catch(() => {});
   },

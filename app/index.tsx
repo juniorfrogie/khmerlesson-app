@@ -9,6 +9,7 @@ import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 import { useSubscriptionStore } from '@/src/features/subscriptions/store/subscriptionStore';
 import { syncSubscription } from '@/src/features/subscriptions/service';
 import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
+import { fetchAndMergeCloudProgress } from '@/src/features/progress/service';
 
 export default function Index() {
   const router = useRouter();
@@ -45,6 +46,12 @@ export default function Index() {
       // "confirmed no subscription", so nothing flashes as locked meanwhile).
       if (authed && tokens?.accessToken) {
         syncSubscription(tokens.accessToken).catch(() => {});
+        // Cloud progress (quiz scores + lesson completion) restores the
+        // same way — see src/features/progress/service.ts. Also fire-and-
+        // forget for the same reason: shouldn't add a round trip to every
+        // cold start, and the local namespaced stores already hydrated
+        // above render correctly in the meantime.
+        fetchAndMergeCloudProgress(tokens.accessToken).catch(() => {});
       }
 
       if (authed || guest) {

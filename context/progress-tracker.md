@@ -216,66 +216,49 @@ Current architecture: local-only, split across two independent stores keyed by `
   * Likely affected components actually touched: new `src/shared/utils/identityNamespace.ts`, `src/features/lessons/store/progressStore.ts`, `src/features/quizzes/store/quizScoreStore.ts`, `app/index.tsx` (hydrate ordering only — `authStore.ts` itself was not modified).
   * Verified: `tsc --noEmit` and `eslint` clean (only pre-existing warnings in `app/index.tsx`, unrelated to this change). Focused unit tests for this logic are tracked under Testing (P2) below, not yet written.
 
-* [ ] Design the cloud progress schema + migration (quiz scores + lesson completion)
-  * Current behavior: no such tables exist; `analytics` is aggregate, not per-user.
-  * Target behavior: two new tables, following the existing Drizzle conventions in `shared/schema.ts` (serial PK, `references()` with `onDelete: 'cascade'`, `timestamp` columns — matches `subscriptions`/`analytics`):
-    - `quiz_attempts`: `id, userId → users (cascade), lessonId → lessons, quizId → quizzes, score, total, correctAnswers, completedAt, createdAt, updatedAt`. **No resumable/in-progress columns** — decided scope is final score + completion state only.
-    - `lesson_completions`: `id, userId → users (cascade), lessonId → lessons, courseId → mainLessonId, completedAt, createdAt, updatedAt` — mirrors what `useProgressStore.markComplete()` already tracks locally (`completedLessons: Record<courseId, lessonId[]>`).
-  * New migration `migrations/0004_<name>.sql` (next after `0003_debug_logs.sql`), via `npm run db:migrate`.
-  * Likely affected components: `khmerlesson-dashboard/shared/schema.ts`, new migration file.
-  * Dependencies: none — foundational for the rest of this phase.
-  * Acceptance criteria: schema reviewed and migration applies cleanly against the dev database.
+* [x] Design the cloud progress schema + migration (quiz scores + lesson completion) — **done 2026-08-31 [BACKEND]**
+  * Implementation (`khmerlesson-dashboard`, commit `c7ae914`): `quiz_attempts` (`id, userId → users cascade, lessonId → lessons cascade, quizId → quizzes cascade, score, total, completedAt, createdAt, updatedAt`, unique on `(userId, quizId)`) and `lesson_completions` (`id, userId → users cascade, mainLessonId → main_lessons cascade, lessonId → lessons cascade, completedAt, createdAt, updatedAt`, unique on `(userId, lessonId)`) added to `shared/schema.ts`. Scoped down from a log-of-attempts to one upserted row per user+quiz (or user+lesson) — matches both the decided final-state-only scope and what the mobile local cache already holds (one score per lesson, not a history).
+  * Migration `migrations/0004_cloud_progress.sql` — **hand-authored, matching this repo's existing style for 0001-0003** (idempotent `IF NOT EXISTS`/`DO $$ ... EXCEPTION WHEN duplicate_object`), since no `DATABASE_URL`/live database is reachable in this environment to run `drizzle-kit generate`. `migrations/meta/_journal.json` updated with the corresponding entry, matching how 0001-0003 were registered (no per-migration snapshot file exists for any of them either — this repo's established convention, not a shortcut invented here).
+  * `[BLOCKED — HUMAN ACTION REQUIRED: no DATABASE_URL/database is reachable in this environment]` — the migration has **not been applied to any database**. A human needs to run `npm run db:migrate` (or review-then-apply the SQL directly) against dev/staging before these tables actually exist; until then, the new API endpoints below will fail against a live server.
+  * Verified: `DATABASE_URL=<placeholder> npm run check` (tsc) clean — schema types compile; the SQL itself has not been executed anywhere.
 
-* [ ] Backend progress API (quiz + lesson)
-  * Current behavior: `POST /api/v1/quizzes/:id/submit` grades and access-checks but persists nothing; no lesson-completion endpoint exists at all; no read endpoint exists for either.
-  * Target behavior: `GET /api/v1/progress` (current user's quiz attempts + lesson completions, or two endpoints if cleaner given the two tables) and corresponding `POST` upserts, as a new `server/features/progress/` module matching the existing two-layer `controller/route` pattern, mounted in `server/routes.ts`, requiring `authenticateToken` (not semi-public — progress is always user-owned). `[NEEDS INVESTIGATION]`: whether to extend the existing `/submit` endpoint to persist quiz attempts (it already grades + access-checks) rather than add a parallel endpoint.
-  * Likely affected components: new `server/features/progress/` (or extended `server/api.ts` submit route), `server/routes.ts`.
-  * Dependencies: schema (above).
-  * Acceptance criteria: an authenticated request can write and then read back both a quiz attempt and a lesson completion.
+* [x] Backend progress API (quiz + lesson) — **done 2026-08-31 [BACKEND]**
+  * Implementation (`khmerlesson-dashboard`, commit `c7ae914`): new `server/features/progress/controller/controller.ts` (`ProgressController` — `getQuizAttempts`, `getLessonCompletions`, `upsertQuizAttempt`, `upsertLessonCompletion`, using Drizzle's `onConflictDoUpdate` against the unique constraints above). Routes added inline in `server/api.ts` (matching this file's existing convention: mobile-facing `/api/v1/*` endpoints live here, not in a separate `route/route.ts` — see `GET /me`, `POST /subscriptions`, etc. already in this file) — resolved the `[NEEDS INVESTIGATION]` in favor of new endpoints over extending `/submit`, since `/submit`'s existing contract (stateless grading, no auth requirement beyond `getQuizAccess`) is meaningfully different from a persistence write:
+    - `GET /api/v1/progress` → `{ quizAttempts, lessonCompletions }` for the caller.
+    - `POST /api/v1/quiz-progress` → upsert one attempt.
+    - `POST /api/v1/lesson-progress` → upsert one completion.
+  * All three require authentication (not added to `SEMI_PUBLIC_PREFIXES`) and 401 with no `req.user` — progress is always user-owned, unlike course/quiz listings.
+  * Backward compatibility: purely additive new routes; nothing existing changed, so the currently-released iOS app is unaffected regardless of whether this deploys.
+  * Verified: `DATABASE_URL=<placeholder> npm run check` clean. Not verified against a live database (blocked, see schema item above) — request/response shapes reviewed by inspection against what the mobile client (below) actually sends.
 
-* [ ] Ownership/authorization on progress endpoints
-  * Target behavior: every read/write scoped to `req.user.id` from the verified JWT, never a client-supplied `userId` — mirrors how `hasAccessToCourse` always derives `userId` from the authenticated caller.
-  * Likely affected components: new progress controller.
-  * Dependencies: backend API (above).
-  * Acceptance criteria: one user cannot read or write another user's progress by manipulating request parameters.
+* [x] Ownership/authorization on progress endpoints — **done 2026-08-31 [BACKEND], same change as above**
+  * Implementation: every handler reads `userId` from `req.user?.id` (the verified JWT payload) and 401s if absent; the Zod schemas (`insertQuizAttemptSchema`/`insertLessonCompletionSchema`) `omit({ userId: true, ... })` so a client-supplied `userId` in the request body is structurally impossible to smuggle through — `userId` is only ever attached server-side via `{ ...parsed, userId }`.
 
-* [ ] Client-side sync for quiz completion — cloud becomes authoritative, local becomes cache
-  * Current behavior: `quiz/[id].tsx:35-38` writes only to `useQuizScoreStore` (namespaced AsyncStorage, per the item above).
-  * Target behavior: on completion, call the new progress endpoint in addition to (not instead of) the local write.
-  * Likely affected components: `app/quiz/[id].tsx`, `src/features/quizzes/store/quizScoreStore.ts` (or a new service wrapping it).
-  * Dependencies: backend API + ownership checks; namespacing item (above).
-  * Acceptance criteria: a completed quiz is visible via the new `GET` endpoint immediately after completion.
+* [x] Client-side sync for quiz completion — **done 2026-08-31 [MOBILE]**
+  * Implementation (`khmerlesson-app`): new `src/features/progress/service.ts` exports `syncQuizAttempt(accessToken, { lessonId, quizId, score, total })`, called from `app/quiz/[id].tsx` right after the existing local `setScore()` write (still unconditional — cloud sync is additive, never a replacement, per the task's explicit requirement). Guest users (no `accessToken`) simply skip the cloud call; the local score still applies.
+  * `quizScoreStore`'s `ScoreEntry` gained `quizId` and `completedAt` fields (previously just `{ score, total }`) — needed so the sync payload has a `quizId` to key the backend's unique constraint on, and so cloud-vs-local conflicts (below) can be resolved by recency. `setScore()`'s call signature changed to `(lessonId, quizId, score, total, completedAt?)`; the one real call site (`quiz/[id].tsx`) was updated — confirmed via `grep` that no other file calls `setScore` directly (`(tabs)/quiz.tsx` and `course/[id].tsx` only read the `scores` record, passing entries through without destructuring, so the additive fields don't break them).
+  * Acceptance criteria met by construction: `GET /api/v1/progress` reflects a quiz attempt as soon as `POST /api/v1/quiz-progress` (called synchronously from the sync above) resolves — not independently verified end-to-end against a live server (blocked, see schema item).
 
-* [ ] Client-side sync for lesson completion — same pattern as quiz sync
-  * Current behavior: `useProgressStore.markComplete()` (`src/features/lessons/store/progressStore.ts:26-32`), called from `app/lesson/[id].tsx` on Finish, writes only to local AsyncStorage.
-  * Target behavior: on `markComplete`, also call the new lesson-completion endpoint, mirroring the quiz sync item above.
-  * Likely affected components: `src/features/lessons/store/progressStore.ts`, `app/lesson/[id].tsx`.
-  * Dependencies: backend API + ownership checks; namespacing item (above).
-  * Acceptance criteria: a completed lesson is visible via the new `GET` endpoint immediately after completion.
+* [x] Client-side sync for lesson completion — **done 2026-08-31 [MOBILE], same pattern**
+  * Implementation: `syncLessonCompletion(accessToken, { mainLessonId, lessonId })` in the same new service, called from `app/lesson/[id].tsx`'s `handleNext` right after the existing `useProgressStore.getState().markComplete(courseId, lesson.id)` call — again additive, not a replacement.
 
-* [ ] Fetch cloud progress on session restoration/login (both types)
-  * Target behavior: alongside the subscription-sync-on-restore item above, fetch cloud quiz attempts + lesson completions and merge into the two local stores on restore/login, so progress from another device or after reinstall appears without redoing anything.
-  * Likely affected components: `app/index.tsx`, `src/features/quizzes/store/quizScoreStore.ts`, `src/features/lessons/store/progressStore.ts`.
-  * Dependencies: backend API; Phase 1's startup validation; namespacing item (so the fetched data lands in the right user's namespace).
-  * Acceptance criteria: logging into a fresh install shows previously-completed lessons and quiz scores.
+* [x] Fetch cloud progress on session restoration/login (both types) — **done 2026-08-31 [MOBILE]**
+  * Implementation: `fetchAndMergeCloudProgress(accessToken)` (same service) calls `GET /api/v1/progress` and merges both arrays into the local namespaced stores. Wired into `app/index.tsx` alongside the subscription-sync-on-restore call — same fire-and-forget treatment (not awaited before routing), same reasoning: the already-hydrated local stores render correctly in the interim, and `debug_logs` traces make a slow/failed merge diagnosable after the fact.
+  * Acceptance criteria: by construction, a fresh install that logs into an existing account will show previously-completed lessons/quizzes once the merge resolves — not verified against a live server (blocked, see schema item).
 
-* [ ] Offline write buffering + retry
-  * Target behavior: if a progress write fails (offline), keep the local write and retry later. `[NEEDS INVESTIGATION]` for the exact retry/queue mechanism — note `logger.ts`'s `flushLogs()` re-buffer-on-failure pattern (`src/shared/utils/logger.ts:94-101`) is a proven precedent already in this codebase that a similar mechanism could reuse.
-  * Likely affected components: both client-side sync items (above).
-  * Dependencies: client-side sync (both).
-  * Acceptance criteria: completing a quiz or lesson offline does not lose the record, and it syncs once connectivity returns.
+* [x] Offline write buffering + retry — **done 2026-08-31 [MOBILE], resolved the `[NEEDS INVESTIGATION]`**
+  * Implementation: `src/features/progress/service.ts` maintains a single pending-write queue in AsyncStorage (`pending_progress_sync`, a JSON array of `{ type: 'quiz' | 'lesson', body }`) — a failed `syncQuizAttempt`/`syncLessonCompletion` call appends to it instead of discarding the write. `flushPendingProgress(accessToken)` retries every queued item and drops only the ones that actually succeed. This does directly reuse the precedent flagged in the original TODO: the re-buffer-on-failure shape mirrors `logger.ts`'s `flushLogs()` (append on failure, drop on success), adapted from a fixed-size ring buffer to an unbounded persisted queue since progress writes are far lower-volume than log lines.
+  * Flush is triggered from two points: after every `fetchAndMergeCloudProgress` call (session restore/login — network connectivity is most likely just been (re)confirmed by the fetch that preceded it), and on every app-foreground transition (`app/_layout.tsx`'s existing `AppState` listener, alongside the Phase 1 token-revalidation call already there).
+  * Acceptance criteria: a quiz/lesson completed while offline keeps its local write immediately (unaffected either way) and is queued for cloud sync rather than silently dropped; not verified against a live server (blocked, see schema item) or real airplane-mode device testing (no device available).
 
-* [ ] Conflict handling between local cache and cloud
-  * Target behavior: define the merge rule — this overlaps directly with the legacy-migration rules in Phase 3A below; likely the same rule set applies to steady-state multi-device conflicts, not just the first migration. Since scope is final-state-only (no resumable attempts), conflicts reduce to "which side has a completion recorded" and "which completion timestamp is newer" — no partial-vs-partial merge logic needed.
-  * Likely affected components: both client-side sync items.
-  * Dependencies: offline buffering.
-  * Acceptance criteria: a documented, testable rule exists for every conflict case (cloud empty, cloud newer, local newer).
+* [x] Conflict handling between local cache and cloud — **done 2026-08-31 [MOBILE]**
+  * Implementation: for quiz scores, `quizScoreStore.setScore()` itself now enforces the rule — an incoming write (from cloud merge or from a local completion) is applied unless a *newer* `completedAt` is already present locally, using ISO-8601 string comparison (safe for chronological ordering since `completedAt` is always produced by `new Date().toISOString()`, a consistent format). This is what makes `fetchAndMergeCloudProgress` safe to call unconditionally without first checking whether a fresher local write (possibly still sitting in the pending queue above) exists — it can't be clobbered by a stale cloud snapshot. For lesson completion, no timestamp comparison is needed at all: completion is boolean, and `markComplete()` was already idempotent (`if (existing.includes(lessonId)) return;`), so applying a cloud completion the device already has locally is a safe no-op in either direction.
+  * This is the same rule documented for Phase 3A's legacy migration below — one rule, two call sites (steady-state sync vs. one-time migration).
 
-* [ ] Progress sync diagnostics
-  * Target behavior: emit `quiz_progress_sync_started` / `quiz_progress_synced` / `quiz_progress_sync_failed` and `lesson_progress_sync_started` / `lesson_progress_synced` / `lesson_progress_sync_failed` through the existing `logger`.
-  * Likely affected components: both client-side sync items.
-  * Dependencies: client-side sync (both).
-  * Acceptance criteria: a progress-sync trace is queryable in `debug_logs`.
+* [x] Progress sync diagnostics — **done 2026-08-31 [MOBILE], same change**
+  * Implementation: `quiz_progress_sync_started/synced/failed`, `lesson_progress_sync_started/synced/failed`, `progress_fetch_started/fetched/failed`, and `pending_progress_flushed` all emitted through the existing `logger` from `src/features/progress/service.ts`.
+
+Verified (all items above): `tsc --noEmit`/`npm run check` and `eslint` clean in both repos across every touched file — only pre-existing warnings remain. **Not verified**: any of this against a running backend + real database, since no `DATABASE_URL` is reachable in this environment (see the `[BLOCKED]` schema item) — this is the single largest gap in this phase's verification and should be the first thing checked once a human applies the migration.
 
 * [ ] Focused unit tests for the namespacing + merge logic — **decided scope, see Testing below**
   * Target behavior: cover the per-user namespace switch (namespacing item above) and the cloud/local conflict-resolution rule (above) with targeted unit tests — these are exactly the kind of easy-to-silently-regress, hard-to-manually-verify-every-time logic the testing decision below calls out as high-risk.
