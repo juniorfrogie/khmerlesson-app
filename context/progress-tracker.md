@@ -4,11 +4,11 @@ Update this file after every meaningful implementation change. If bugs or any su
 
 ## Current Phase
 
-- In progress
+- In progress — investigation + planning complete for the next Improvement Roadmap cycle (auth/session reliability, subscription sync, cloud quiz progress, Google Play launch). No implementation has started yet; see "## KhmerLesson Improvement Roadmap" below.
 
 ## Current Goal
 
-- Phase B complete — Quiz 1 improvements shipped
+- Phase D complete — Subscription UX fixes shipped. Next: work the Improvement Roadmap below, in the dependency order it specifies, starting with Phase 1 (Authentication & Session Persistence).
 
 ## Completed
 
@@ -90,11 +90,561 @@ Work these in order. Each item is one unit; run `npx tsc --noEmit` and update th
 
 ---
 
+## KhmerLesson Improvement Roadmap
+
+Investigated 2026-08-30. Four coordinated objectives: (1) auth/session reliability, (2) subscription restoration/sync, (3) cloud quiz progress, (4) Google Play launch. Not yet implemented — this is the planning breakdown. Findings below are grounded in the actual code (file:line references throughout); items with no confirmed answer are marked `[NEEDS INVESTIGATION]`, and Play policy items that need a live check are marked `[VERIFY CURRENT GOOGLE PLAY REQUIREMENT]`.
+
+### Key architecture findings from investigation
+
+- **Root cause of "logged out after a few days" (Phase 1) is confirmed and precise**: `src/services/api.ts`'s `apiFetch`/`apiPost`/`apiPostForm` have no token-refresh awareness at all. `useAuthStore.refreshTokens()` (`src/features/auth/store/authStore.ts:69-82`) exists and works, but is called from exactly **one** place in the whole app — `purchaseService.ts:113-121`, mid-purchase. Every other authenticated hook (`useCourseLessons`, `useLessonDetail`) just detects the backend's `code: "TOKEN_EXPIRED"` response and sets `forbiddenReason: 'tokenExpired'`, and the screens respond by redirecting straight to `/auth/login` — never attempting a silent refresh first. Backend-side, `server/auth/middleware/authenticate.ts:104-115` explicitly disables auto-refresh for Bearer-token (mobile) clients by design ("Mobile clients must call `POST /api/auth/refresh-token` explicitly") — so this is a client-side gap, not a backend bug.
+- **This root cause also explains most of the Phase 2 subscription symptom**: `GET /api/v1/main-lessons` is in `SEMI_PUBLIC_PREFIXES` (`authenticate.ts:39-51`), so an expired/invalid access token does not 401 on it — the middleware falls through with `req.user` undefined, and the course list silently renders as if the user were logged out (`hasAccess: false` on every non-free course). So a large share of "subscription looks lost" is really "the access token expired and nothing refreshed it" — fixing Phase 1 should visibly shrink Phase 2's symptom, though Phase 2 still needs its own fix (see below) for the remaining gap: session **restoration** never proactively syncs subscription even with a valid token.
+- **The task's assumption about logout deleting quiz progress is backwards** — verified `authStore.signOut()` (`authStore.ts:40-46`): it clears `auth_state` and calls `subscriptionStore.clearSubscription()`, but never touches `useProgressStore` (`lesson_progress`) or `useQuizScoreStore` (`quiz_scores`). Progress is **not** deleted on logout — it silently **persists across accounts on the same device**, since it's keyed only by `courseId`/`lessonId`, never by `userId`. This is a real, currently-shipping data-integrity bug independent of the cloud migration and is called out as its own P0 item below.
+- **No user-scoped progress table exists in the backend at all.** `shared/schema.ts`'s only progress-adjacent table is `analytics` (aggregate `completions`/`averageScore` per lesson/quiz, not per-user). `POST /api/v1/quizzes/:id/submit` (`server/api.ts:373-422`) already grades server-side and enforces access control, but **persists nothing** and is **never called by the mobile app** — the app grades entirely client-side using the `correctAnswer` field the quiz-detail response already ships in plaintext. Phase 3 is a from-scratch build, not a wire-up of existing plumbing, though the `/submit` endpoint's grading/access-check logic can likely be extended rather than duplicated.
+- **Subscription entitlement is already platform-agnostic in the DB.** `hasAccessToCourse` (`server/features/subscriptions/controller/controller.ts:32-45`) only reads `subscriptions.status`/`currentPeriodEndsAt` + the `subscription_plan_courses` join — `platform` is just a column, not a branch in the access logic, and `subscriptionPlans.productIdAndroid` already exists (unused). This means Phase 4.4 ("unified entitlement") is narrower than it might sound — it's mostly "make the Android verification path write into the same table the same way," not a new abstraction layer.
+- **A full request-tracing pipeline already exists and is production-tested** (`src/shared/utils/logger.ts` ↔ `server/utils/trace-logger.ts` ↔ `debug_logs` table ↔ dashboard "Debug Logs" page, all keyed by `X-Correlation-ID`/`traceId`), built specifically to debug the subscription/purchase flow — see `context/subscription-debugging.md`. Phase 5 below is almost entirely about wiring new event types into this existing system, not building new infrastructure.
+- **No automated test suite exists** in either repo (`khmerlesson-dashboard/CLAUDE.md`: "No test suite is configured"; nothing in this repo's `package.json` suggests one either). **Decided 2026-08-30**: add focused unit tests for this cycle's specific high-risk logic only (see the Testing section under P2 below) — everything else stays manual-checklist QA.
+- **`khmerlesson-app/khmerlesson-app/ios/Pods/`** — a stray, one-level-too-deep CocoaPods artifacts folder was found during this investigation. `[NEEDS INVESTIGATION]` — looks like leftover from a misplaced `pod install`; not part of the tracked native config (`.gitignore:47` already ignores `/ios` and `/android` at the real root — this is a nested app inside itself). Confirm with the user before deleting.
+
+### Recommended dependency order
+
+1. Phase 1 — Auth/session reliability (foundational: Phase 2 and 3's "sync on restore" items need a valid, refreshed token to sync against)
+2. Phase 2 — Subscription sync architecture + auto-restore
+3. Phase 3 — Quiz progress backend/schema, then client sync
+4. Phase 3A — Legacy local-progress migration
+5. Phase 4.1 — Android application readiness (package name decision blocks almost everything else in Phase 4)
+6. Phase 4.2 — Android authentication
+7. Phase 4.3 — Google Play Billing
+8. Phase 4.4 — Unified entitlement verification (mostly confirmation, not new build — see finding above)
+9. Phase 4.5 — Cross-platform progress verification (QA, not new build — depends on Phase 3)
+10. Phase 4.7 — Android QA
+11. Phase 4.6 — Play Console / store compliance (can run in parallel with 4.1-4.5 once the package name is set, since most of it is non-code)
+12. Phase 4.8 — Production release
+13. Phase 5 — Observability wiring (additive throughout — each phase above should wire its own events as it lands, not as a separate final pass)
+
+---
+
+### P0 — Critical: Account & Data Reliability
+
+#### Authentication & Session Persistence
+
+Current architecture: Zustand store (`src/features/auth/store/authStore.ts`) persisted as plain JSON to `AsyncStorage` key `auth_state` (unencrypted). `hydrate()` just replays whatever was stored, with no expiry check. `refreshTokens()` exists and correctly rotates the refresh token but is invoked from exactly one call site (mid-purchase). `app/index.tsx:16-38` hydrates auth/progress/subscription/quiz stores in parallel at cold start and routes based on `isAuthenticated`/`isGuest` with no validation step in between.
+
+* [ ] Add a token-refresh interceptor to the shared API layer
+  * Current behavior: `apiFetch`/`apiPost`/`apiPostForm` (`src/services/api.ts`) throw on any non-2xx, including `401 { code: "TOKEN_EXPIRED" }`, with no refresh attempt. Only `purchaseService.ts:113-121` catches this and retries. `useCourseLessons`/`useLessonDetail` detect the same code and redirect to `/auth/login` instead of retrying.
+  * Target behavior: on `TOKEN_EXPIRED`, transparently call `refreshTokens()`, retry the original request once with the new token, and only surface `forbiddenReason: 'tokenExpired'` / redirect to login if the refresh call itself fails.
+  * Likely affected components: `src/services/api.ts`, `src/features/auth/store/authStore.ts`, `src/services/hooks/useCourseLessons.ts`, `src/services/hooks/useLessonDetail.ts`, any future authenticated hook.
+  * Dependencies: none — foundational for the rest of this phase.
+  * Acceptance criteria: a request made with an expired-but-refreshable access token succeeds transparently; the user is only routed to `/auth/login` when the refresh token itself is invalid, expired, or blacklisted.
+
+* [ ] Deduplicate concurrent refresh calls
+  * Current behavior: not yet an issue (no interceptor exists), but once the item above lands, simultaneous authenticated calls (e.g. the `Promise.all` in `app/index.tsx:18-23`) would each independently call `refreshTokens()`, racing to overwrite `auth_state` — `authStore.ts:78`'s `refreshToken: result.refreshToken ?? tokens.refreshToken` assumes the token used in-flight is still current.
+  * Target behavior: a single in-flight refresh promise shared across all callers; concurrent requests await the same refresh and retry after it resolves.
+  * Likely affected components: `src/features/auth/store/authStore.ts` (`refreshTokens`), `src/services/api.ts`.
+  * Dependencies: token-refresh interceptor (above).
+  * Acceptance criteria: triggering several authenticated requests at once with an expired token results in exactly one call to `POST /api/auth/refresh-token`.
+
+* [ ] Validate/refresh session proactively at startup
+  * Current behavior: `app/index.tsx:16-38` hydrates stores and routes to `(tabs)`/`auth/login` based on `isAuthenticated`/`isGuest` alone — it never checks whether the stored access token is expired, and never calls `refreshTokens()`. `authStore.ts:54-56` already decodes the JWT `exp` for a debug log — the same decode can drive a real expiry check.
+  * Target behavior: `App Launch → Restore Session → Validate/Refresh Session → Establish Authenticated User → Load User Data → Open Application`. Add an explicit auth status (`'idle' | 'restoring' | 'ready' | 'unauthenticated'`) so routing doesn't commit until restoration actually resolves.
+  * Likely affected components: `app/index.tsx`, `src/features/auth/store/authStore.ts`.
+  * Dependencies: interceptor + dedup (above).
+  * Acceptance criteria: a user is never routed to `/auth/login` solely because a merely-expired (not invalid) access token was stored.
+
+* [ ] Foreground/background session revalidation
+  * Current behavior: `[NEEDS INVESTIGATION]` — no `AppState` listener for auth was found in `app/_layout.tsx` or elsewhere; session state is only touched at cold start.
+  * Target behavior: revalidate/refresh the token when the app returns to `active` after being backgrounded, so a returning user doesn't see a flash of forbidden/unauthenticated state before the interceptor above self-heals it.
+  * Likely affected components: `app/_layout.tsx` or a new auth hook.
+  * Dependencies: proactive startup validation (above).
+  * Acceptance criteria: backgrounding the app past the access-token TTL and returning to foreground shows no flash of locked/unauthenticated UI.
+
+* [ ] Move auth tokens to secure storage
+  * Current behavior: `auth_state` (user + `accessToken` + `refreshToken`) lives in plain `AsyncStorage` (`authStore.ts:7,32,50`) — unencrypted on both platforms. `expo-secure-store` is not in `package.json`.
+  * Target behavior: move at least the refresh token (ideally both tokens) to `expo-secure-store` (Keychain/Keystore-backed); non-sensitive `user` profile can stay in AsyncStorage.
+  * Likely affected components: `src/features/auth/store/authStore.ts`, `package.json` (new dependency).
+  * Dependencies: none, but coordinate with the items above since the storage shape changes.
+  * Acceptance criteria: the refresh token is not recoverable by directly reading the app's AsyncStorage sandbox after login.
+
+* [ ] Remove raw token values from console logs
+  * Current behavior: `authStore.ts:29-31` logs the full `user`, `accessToken`, and `refreshToken` on every `setAuth()`; `service.ts:88` logs the full Apple verify response. These are `console.log`, not the trace-id `logger` — they don't reach `debug_logs`, but persist in Metro/device logs.
+  * Target behavior: remove or redact — log presence/length/expiry, never raw token values.
+  * Likely affected components: `src/features/auth/store/authStore.ts:29-31`, `src/features/auth/service.ts:88`.
+  * Dependencies: none — ship independently, low risk.
+  * Acceptance criteria: no access/refresh token value appears in console output on sign-in.
+
+* [ ] Wire session-lifecycle events into the existing debug-log pipeline
+  * Current behavior: the trace-id logging pipeline (`src/shared/utils/logger.ts` → `debug_logs`) is proven (used for purchase-flow tracing) but not used for auth lifecycle at all today.
+  * Target behavior: emit `session_restore_started`, `session_restored`, `session_refresh_failed` etc. through the existing `logger`, matching the naming convention already used in `purchaseService.ts`.
+  * Likely affected components: `app/index.tsx`, `src/features/auth/store/authStore.ts`.
+  * Dependencies: proactive startup validation (above).
+  * Acceptance criteria: a `traceId` for a session-restore-and-refresh cycle can be queried in `debug_logs` end-to-end, the same way a purchase trace can today.
+
+* [ ] Auth regression QA pass
+  * Current behavior: no automated coverage exists; per the Testing decision (P2 below), the refresh/dedup logic itself gets focused unit tests, but the end-to-end flow stays manual QA.
+  * Target behavior: manual checklist — fresh login (Google/Apple/Guest) → force-expire the access token → confirm silent refresh → let the refresh token itself expire → confirm graceful redirect to login → confirm logout clears `auth_state` correctly and does not incorrectly clear/leak other stores (see the account-boundary namespacing item under Account-Scoped Progress Cloud Sync below).
+  * Likely affected components: N/A (QA).
+  * Dependencies: all items above.
+  * Acceptance criteria: all scenarios in the checklist behave per their target descriptions above.
+
+#### Subscription Restoration & Synchronization
+
+Current architecture: `useMySubscription` (`src/services/hooks/useMySubscription.ts`) is the only thing that calls `GET /api/v1/subscriptions/me` and writes into `useSubscriptionStore`; it's mounted in exactly two places — `app/(tabs)/me.tsx:21` and `app/subscription/index.tsx:37`. `subscriptionStore.hydrate()` (`src/features/subscriptions/store/subscriptionStore.ts:27-36`) only replays the last cached AsyncStorage value — no network call. `app/auth/login.tsx:36-43`'s `prefetchSubscription` DOES sync right after a **fresh** Google/Apple login — the gap is specifically session **restoration** (returning with an already-persisted session) and background return. `purchaseService.ts`'s `reconcileAvailablePurchases()` (only invoked via `initPurchaseFlow()` at `app/subscription/index.tsx:74` on mount) is what the task calls "visiting the Plan screen causes a backend subscription check." Course access itself (`hasAccess`/`comingSoon`) is computed server-side per request, not derived from the local store — see the root-cause finding above tying this to Phase 1.
+
+* [ ] Extract subscription sync into a reusable function
+  * Current behavior: the only live-sync logic lives inside the `useMySubscription` hook, only callable from a mounted component.
+  * Target behavior: a `syncSubscription(accessToken)` function (new `src/features/subscriptions/service.ts`) wrapping the same fetch + store write, callable from anywhere; `useMySubscription` becomes a thin wrapper around it.
+  * Likely affected components: new `src/features/subscriptions/service.ts`, `src/services/hooks/useMySubscription.ts`.
+  * Dependencies: none.
+  * Acceptance criteria: subscription sync can be triggered outside of a mounted hook (e.g. from `app/index.tsx`).
+
+* [ ] Trigger subscription sync on session restoration
+  * Current behavior: `app/index.tsx` never makes a subscription network call — only the passive `hydrate()` cache replay.
+  * Target behavior: after auth restoration resolves with a valid/refreshed token, call `syncSubscription()` before routing into `(tabs)`, mirroring what `login.tsx`'s `prefetchSubscription` already does for a fresh login.
+  * Likely affected components: `app/index.tsx`.
+  * Dependencies: Phase 1's interceptor + startup validation; the extracted sync function above.
+  * Acceptance criteria: an existing subscriber who force-quits and reopens the app (without visiting the Plan screen) sees correct course access immediately.
+
+* [ ] Introduce an explicit subscription status distinct from "no subscription"
+  * Current behavior: `subscriptionStore.mySubscription: Subscription | null` overloads `null` to mean both "not loaded yet" and "confirmed no subscription" — e.g. the trial-eligibility check in `app/subscription/index.tsx` (progress-tracker `D2`) reads `mySubscription === null` as "eligible for trial," which is also true before the first fetch resolves.
+  * Target behavior: add `status: 'unknown' | 'loading' | 'active' | 'inactive' | 'error'`, set explicitly by every write path (`hydrate`, `setSubscription`, `clearSubscription`, and the new sync function). UI must treat `unknown`/`loading` as "don't lock content," never as "no subscription" — per the task's explicit warning against conflating the two.
+  * Likely affected components: `src/features/subscriptions/store/subscriptionStore.ts`, `src/features/subscriptions/types.ts`, `app/subscription/index.tsx`, `app/(tabs)/me.tsx`.
+  * Dependencies: extracted sync function.
+  * Acceptance criteria: no UI ever shows "locked"/"not subscribed" state while a sync is genuinely still in flight.
+
+* [ ] Refresh course access after subscription sync resolves
+  * Current behavior: `useCourses` (`src/services/hooks/useCourses.ts`) already refetches on `accessToken` change and on every tab focus (`app/(tabs)/index.tsx:31-38`), so this may partly self-heal once the items above land.
+  * Target behavior: `[NEEDS INVESTIGATION]` whether an explicit `refetch()` call is still needed right after `syncSubscription()` resolves (e.g. before any focus event has fired on first render).
+  * Likely affected components: `app/(tabs)/index.tsx`, wherever `syncSubscription` is called from.
+  * Dependencies: the two items above.
+  * Acceptance criteria: course lock state visibly updates within one render of a subscription sync completing, without requiring a manual tab switch.
+
+* [ ] Manual "Restore Purchases" affordance
+  * Current behavior: restoration today is implicit only — `reconcileAvailablePurchases()` runs automatically on `initPurchaseFlow()` and swallows its own errors silently (`purchaseService.ts:237`, `.catch(() => {})`). No explicit user-facing button exists.
+  * Target behavior: `[NEEDS INVESTIGATION]` confirm whether store review requires a visible "Restore Purchases" affordance distinct from the automatic reconcile; if so, add one to `app/subscription/index.tsx` with real loading/success/failure feedback.
+  * Likely affected components: `app/subscription/index.tsx`, `src/features/courses/service/purchaseService.ts`.
+  * Dependencies: none directly; shares code with Phase 4.3's Android restore path.
+  * Acceptance criteria: a user can trigger restoration on demand and see the outcome, not just have it happen silently on screen mount.
+
+* [ ] Subscription sync error handling
+  * Current behavior: `useMySubscription`'s `.catch()` only sets a local `error` string on the hook — it never marks the store itself as errored, so a failed sync is indistinguishable from a cached success.
+  * Target behavior: wire failures into the new `status: 'error'` state; on error, fall back to the last-known-good cached value rather than re-locking content.
+  * Likely affected components: `src/features/subscriptions/store/subscriptionStore.ts`, `src/services/hooks/useMySubscription.ts`.
+  * Dependencies: explicit status field (above).
+  * Acceptance criteria: a network failure during sync never causes previously-unlocked content to appear locked.
+
+* [ ] Subscription sync diagnostics
+  * Target behavior: emit `subscription_sync_started` / `subscription_active` / `subscription_sync_failed` through the existing `logger`, mirroring the naming already used in `purchaseService.ts` (e.g. `'reconciling newest entitlement found on init'`).
+  * Likely affected components: new `src/features/subscriptions/service.ts`.
+  * Dependencies: extracted sync function.
+  * Acceptance criteria: a subscription-sync trace is queryable in `debug_logs` by `traceId`.
+
+#### Account-Scoped Progress Cloud Sync (Quiz Scores + Lesson Completion)
+
+**Scope decided 2026-08-30**: covers both quiz scores and lesson completion, as one account-scoped cloud progress architecture. Quiz progress is **final score + completion state only** — no resumable/per-question attempts, since current UX has no resume concept and none is being added this cycle.
+
+Current architecture: local-only, split across two independent stores keyed by `courseId`/`lessonId` (never `userId`) — `useProgressStore` (lesson completion, AsyncStorage key `lesson_progress`) and `useQuizScoreStore` (final quiz score only, AsyncStorage key `quiz_scores`, `src/features/quizzes/store/quizScoreStore.ts`). Grading happens entirely client-side in `app/quiz/[id].tsx` (`handleSelect`) because the quiz-detail API response already ships each question's `correctAnswer` in plaintext (`src/features/quizzes/types.ts`) — no server round-trip occurs during a quiz today. Only the **final** score is ever persisted (`quiz/[id].tsx:35-38`, fires once `showResult` is true). Backend: `POST /api/v1/quizzes/:id/submit` (`server/api.ts:373-422`) already grades server-side and checks access, but writes nothing to the database and is never called by the mobile client. No user-scoped progress table exists in `shared/schema.ts` today.
+
+**Important correction to the task's stated problem**: logout does *not* currently delete local progress (see root-cause finding above) — the real bug is that progress persists **across accounts** on a shared device.
+
+* [ ] Namespace local progress storage by user — **decided approach: per-user namespaced storage, not clear-on-logout**
+  * Current behavior: `authStore.signOut()` (`authStore.ts:40-46`) clears `auth_state` and `subscriptionStore`, but never touches `useProgressStore` or `useQuizScoreStore` — a second account on the same device inherits the first account's lesson/quiz progress. Both stores' AsyncStorage keys (`lesson_progress`, `quiz_scores`) are global, not keyed by user.
+  * Target behavior: namespace both stores' persisted AsyncStorage keys by the active `userId` (e.g. `lesson_progress:<userId>` / `quiz_scores:<userId>`, falling back to a `guest` namespace for `isGuest` sessions), and re-hydrate each store's in-memory state whenever the active identity changes (login, account switch, guest→auth transition) — not only at cold start. Explicitly do **not** rely on clearing progress at `signOut()` as the fix: a user's own progress must still be there if they log back in later, even before cloud sync exists to restore it; only namespacing achieves that.
+  * Likely affected components: `src/features/lessons/store/progressStore.ts`, `src/features/quizzes/store/quizScoreStore.ts`, `src/features/auth/store/authStore.ts` (needs to expose/trigger the identity-change hook these stores key off of).
+  * Dependencies: none — should ship independently and immediately, ahead of the rest of this phase.
+  * Acceptance criteria: signing out and into a different account on the same device never shows the previous account's lesson/quiz progress; signing back into the original account restores its own progress from local cache even offline.
+
+* [ ] Design the cloud progress schema + migration (quiz scores + lesson completion)
+  * Current behavior: no such tables exist; `analytics` is aggregate, not per-user.
+  * Target behavior: two new tables, following the existing Drizzle conventions in `shared/schema.ts` (serial PK, `references()` with `onDelete: 'cascade'`, `timestamp` columns — matches `subscriptions`/`analytics`):
+    - `quiz_attempts`: `id, userId → users (cascade), lessonId → lessons, quizId → quizzes, score, total, correctAnswers, completedAt, createdAt, updatedAt`. **No resumable/in-progress columns** — decided scope is final score + completion state only.
+    - `lesson_completions`: `id, userId → users (cascade), lessonId → lessons, courseId → mainLessonId, completedAt, createdAt, updatedAt` — mirrors what `useProgressStore.markComplete()` already tracks locally (`completedLessons: Record<courseId, lessonId[]>`).
+  * New migration `migrations/0004_<name>.sql` (next after `0003_debug_logs.sql`), via `npm run db:migrate`.
+  * Likely affected components: `khmerlesson-dashboard/shared/schema.ts`, new migration file.
+  * Dependencies: none — foundational for the rest of this phase.
+  * Acceptance criteria: schema reviewed and migration applies cleanly against the dev database.
+
+* [ ] Backend progress API (quiz + lesson)
+  * Current behavior: `POST /api/v1/quizzes/:id/submit` grades and access-checks but persists nothing; no lesson-completion endpoint exists at all; no read endpoint exists for either.
+  * Target behavior: `GET /api/v1/progress` (current user's quiz attempts + lesson completions, or two endpoints if cleaner given the two tables) and corresponding `POST` upserts, as a new `server/features/progress/` module matching the existing two-layer `controller/route` pattern, mounted in `server/routes.ts`, requiring `authenticateToken` (not semi-public — progress is always user-owned). `[NEEDS INVESTIGATION]`: whether to extend the existing `/submit` endpoint to persist quiz attempts (it already grades + access-checks) rather than add a parallel endpoint.
+  * Likely affected components: new `server/features/progress/` (or extended `server/api.ts` submit route), `server/routes.ts`.
+  * Dependencies: schema (above).
+  * Acceptance criteria: an authenticated request can write and then read back both a quiz attempt and a lesson completion.
+
+* [ ] Ownership/authorization on progress endpoints
+  * Target behavior: every read/write scoped to `req.user.id` from the verified JWT, never a client-supplied `userId` — mirrors how `hasAccessToCourse` always derives `userId` from the authenticated caller.
+  * Likely affected components: new progress controller.
+  * Dependencies: backend API (above).
+  * Acceptance criteria: one user cannot read or write another user's progress by manipulating request parameters.
+
+* [ ] Client-side sync for quiz completion — cloud becomes authoritative, local becomes cache
+  * Current behavior: `quiz/[id].tsx:35-38` writes only to `useQuizScoreStore` (namespaced AsyncStorage, per the item above).
+  * Target behavior: on completion, call the new progress endpoint in addition to (not instead of) the local write.
+  * Likely affected components: `app/quiz/[id].tsx`, `src/features/quizzes/store/quizScoreStore.ts` (or a new service wrapping it).
+  * Dependencies: backend API + ownership checks; namespacing item (above).
+  * Acceptance criteria: a completed quiz is visible via the new `GET` endpoint immediately after completion.
+
+* [ ] Client-side sync for lesson completion — same pattern as quiz sync
+  * Current behavior: `useProgressStore.markComplete()` (`src/features/lessons/store/progressStore.ts:26-32`), called from `app/lesson/[id].tsx` on Finish, writes only to local AsyncStorage.
+  * Target behavior: on `markComplete`, also call the new lesson-completion endpoint, mirroring the quiz sync item above.
+  * Likely affected components: `src/features/lessons/store/progressStore.ts`, `app/lesson/[id].tsx`.
+  * Dependencies: backend API + ownership checks; namespacing item (above).
+  * Acceptance criteria: a completed lesson is visible via the new `GET` endpoint immediately after completion.
+
+* [ ] Fetch cloud progress on session restoration/login (both types)
+  * Target behavior: alongside the subscription-sync-on-restore item above, fetch cloud quiz attempts + lesson completions and merge into the two local stores on restore/login, so progress from another device or after reinstall appears without redoing anything.
+  * Likely affected components: `app/index.tsx`, `src/features/quizzes/store/quizScoreStore.ts`, `src/features/lessons/store/progressStore.ts`.
+  * Dependencies: backend API; Phase 1's startup validation; namespacing item (so the fetched data lands in the right user's namespace).
+  * Acceptance criteria: logging into a fresh install shows previously-completed lessons and quiz scores.
+
+* [ ] Offline write buffering + retry
+  * Target behavior: if a progress write fails (offline), keep the local write and retry later. `[NEEDS INVESTIGATION]` for the exact retry/queue mechanism — note `logger.ts`'s `flushLogs()` re-buffer-on-failure pattern (`src/shared/utils/logger.ts:94-101`) is a proven precedent already in this codebase that a similar mechanism could reuse.
+  * Likely affected components: both client-side sync items (above).
+  * Dependencies: client-side sync (both).
+  * Acceptance criteria: completing a quiz or lesson offline does not lose the record, and it syncs once connectivity returns.
+
+* [ ] Conflict handling between local cache and cloud
+  * Target behavior: define the merge rule — this overlaps directly with the legacy-migration rules in Phase 3A below; likely the same rule set applies to steady-state multi-device conflicts, not just the first migration. Since scope is final-state-only (no resumable attempts), conflicts reduce to "which side has a completion recorded" and "which completion timestamp is newer" — no partial-vs-partial merge logic needed.
+  * Likely affected components: both client-side sync items.
+  * Dependencies: offline buffering.
+  * Acceptance criteria: a documented, testable rule exists for every conflict case (cloud empty, cloud newer, local newer).
+
+* [ ] Progress sync diagnostics
+  * Target behavior: emit `quiz_progress_sync_started` / `quiz_progress_synced` / `quiz_progress_sync_failed` and `lesson_progress_sync_started` / `lesson_progress_synced` / `lesson_progress_sync_failed` through the existing `logger`.
+  * Likely affected components: both client-side sync items.
+  * Dependencies: client-side sync (both).
+  * Acceptance criteria: a progress-sync trace is queryable in `debug_logs`.
+
+* [ ] Focused unit tests for the namespacing + merge logic — **decided scope, see Testing below**
+  * Target behavior: cover the per-user namespace switch (namespacing item above) and the cloud/local conflict-resolution rule (above) with targeted unit tests — these are exactly the kind of easy-to-silently-regress, hard-to-manually-verify-every-time logic the testing decision below calls out as high-risk.
+  * Dependencies: namespacing item, conflict handling item.
+
+---
+
+### Phase 3A — Existing Local Progress Migration
+
+Covers both quiz scores and lesson completion, per the Phase 3 scope decision above. Note this migration only matters for pre-existing local data (from before namespacing lands) — since progress storage becomes namespaced by `userId` (see the namespacing item above), a migration only needs to run once per already-signed-in user to move their un-namespaced legacy data into their namespace and up to the cloud; it is not an ongoing per-login concern.
+
+* [ ] Detect legacy (pre-namespacing, pre-cloud) local progress on first cloud-aware launch
+  * Target behavior: on first authenticated sync after this feature ships, check for un-namespaced `lesson_progress`/`quiz_scores` AsyncStorage entries not yet reflected in a "migrated" flag.
+  * Likely affected components: `src/features/quizzes/store/quizScoreStore.ts`, `src/features/lessons/store/progressStore.ts`.
+  * Dependencies: Account-Scoped Progress Cloud Sync items above (namespacing + backend API).
+
+* [ ] One-time migration flag
+  * Target behavior: reuse the existing AsyncStorage-flag idiom already in this codebase (`ONBOARDING_COMPLETE_KEY`, `app/onboarding.tsx` / `app/index.tsx:6,24`) to prevent re-uploading on every launch.
+  * Likely affected components: same as above.
+  * Dependencies: detection (above).
+
+* [ ] Upload-if-cloud-empty / merge-if-both-present logic
+  * Target behavior: cloud empty + local present → upload; cloud present and newer → keep cloud; local newer → sync local. Since scope is final-state-only (no resumable attempts), this reduces to a straightforward "most recent completion wins, never delete a completion" rule — no partial-attempt merge logic needed, per the resolved Phase 3 scope.
+  * Likely affected components: same as above.
+  * Dependencies: migration flag; the conflict-handling rule defined in the cloud sync section above (same rule applies here).
+
+* [ ] Test the upgrade path from the currently-released build
+  * Current behavior: `[NEEDS INVESTIGATION]` — no automated upgrade-path testing exists. Current released version is `1.0.1` (build `19`) per `app.json`.
+  * Target behavior: manual QA installing the released build, generating local progress, then upgrading in place to confirm migration behavior.
+  * Dependencies: all items above.
+
+---
+
+### P1 — Google Play Launch
+
+#### Phase 4.1 — Android Application Readiness
+
+Current state: fully managed Expo workflow — no `android/` native directory exists in the repo (`.gitignore:47` ignores it, and none is present), so all Android config flows through `app.json` + Expo config plugins. `app.json`'s `android` block already has all three adaptive-icon layers (`foreground`/`background`/`monochrome`), `edgeToEdgeEnabled: true`, and `predictiveBackGestureEnabled: false` — but **no `android.package` is set**, which blocks any Android build. `eas.json` has `appVersionSource: "remote"`, so EAS should auto-manage `versionCode` once builds start. A stray `khmerlesson-app/khmerlesson-app/ios/Pods/` folder exists one level too deep — see root-cause findings above.
+
+* [x] Set `android.package` in `app.json` — **done 2026-08-30**
+  * Confirmed application ID: `com.digital606.khmerlesson` (intentionally matches `ios.bundleIdentifier`, per explicit business decision).
+  * Change made: added `"package": "com.digital606.khmerlesson"` to `app.json`'s `android` block (`app.json:35`, alongside `adaptiveIcon`/`edgeToEdgeEnabled`/`predictiveBackGestureEnabled`).
+  * Repo-wide audit before changing anything — searched both `khmerlesson-app` and `khmerlesson-dashboard` for any existing package/bundle-ID references:
+    - `app.json:14` `ios.bundleIdentifier` — matches, left as-is (source of truth this mirrors).
+    - `context/feature-specs/03-purchase-logic.md:154` — a **spec doc**, not live config; references `"bundleId": "com.digital606.khmerlesson"` in an example payload — already correct, no change needed.
+    - `src/features/courses/service/purchaseService.ts:10` `KHMER_SUBSCRIPTION_PREFIX = 'com.khmerlesson.subscription.'` — this is the **IAP product-ID prefix** (a separate namespace for subscription SKUs), not the app's package/application ID. Confirmed not conflicting and left unchanged — do not confuse this with `android.package` when doing future Android IAP work (Phase 4.3).
+    - No `android/` native directory, no `google-services.json`, no `AndroidManifest.xml`/`build.gradle` exist anywhere in the repo (fully managed Expo workflow, confirmed via `.gitignore:47` and an empty search) — so `app.json` was the only file requiring a config change.
+    - `khmerlesson-dashboard` (backend/CORS/OAuth config) has no hardcoded references to the iOS bundle ID or any package ID — confirmed via grep across `server/` and `shared/`; nothing there needed updating.
+    - `eas.json` has no package-identity fields (only per-profile env vars) — nothing to change there either.
+  * Still open / blocked on this value, not yet done: Google Cloud Console Android OAuth client + SHA-1 fingerprint registration (Phase 4.2), Play Console app creation using this package name (Phase 4.6), first Android build to confirm the value actually produces a valid build (Phase 4.1's other items).
+  * Acceptance criteria: met — `android.package` is set consistently; no conflicting placeholder values were found anywhere in either repo.
+
+* [ ] Confirm versionName/versionCode strategy
+  * Current behavior: `eas.json`'s `appVersionSource: "remote"` should auto-increment `versionCode`; no manual `android.versionCode` is set in `app.json`.
+  * Target behavior: verify this produces valid, monotonically increasing version codes for Play Console once builds start.
+  * Dependencies: package name set.
+
+* [ ] Verify production API/network config works on Android
+  * Current behavior: `eas.json`'s `build.production.env` points at `https://khmerlessons.app` (HTTPS already), so likely fine, but `[NEEDS INVESTIGATION]` — Android's Network Security Config defaults are stricter than iOS's ATS in some edge cases.
+  * Dependencies: first Android build.
+
+* [ ] Verify icon/adaptive-icon rendering
+  * Current behavior: assets already exist (`assets/images/android-icon-{foreground,background,monochrome}.png`).
+  * Target behavior: confirm correct rendering across launcher icon shapes on a real device/emulator.
+  * Dependencies: first Android build.
+
+* [ ] Verify splash screen rendering on Android
+  * Current behavior: `expo-splash-screen` plugin config in `app.json` is shared cross-platform.
+  * Dependencies: first Android build.
+
+* [ ] Verify hardware back-button behavior
+  * Target behavior: confirm `expo-router`/`react-navigation`'s default back-button mapping behaves correctly, especially mid-quiz (`app/quiz/[id].tsx`, currently only has an explicit `X` close button at line 123-125, no confirm-before-exit) and on the paywall (`app/subscription/index.tsx`).
+  * Dependencies: first Android build.
+
+* [ ] Investigate `predictiveBackGestureEnabled: false`
+  * Current behavior: explicitly disabled in `app.json`. `[NEEDS INVESTIGATION]` whether this was deliberate (e.g. a screen-transition bug) or just an Expo default — predictive back is increasingly expected on recent Android by Play review.
+  * Dependencies: none.
+
+* [ ] Verify audio/TTS playback on Android
+  * Current behavior: `expo-audio` (`src/features/lessons/service/ttsService.ts`) proxies TTS through the backend; `error.md` documents iOS-only playback glitches from the now-superseded `expo-av`. No Android-specific verification has happened.
+  * Dependencies: first Android build.
+
+* [ ] Verify `react-native-iap` Android setup
+  * Current behavior: the plugin is already listed in `app.json`'s `plugins`; whether it correctly injects Play Billing permissions/dependencies during a managed build is unverified — no Android build has been produced yet.
+  * Dependencies: first Android build; feeds directly into Phase 4.3.
+
+* [ ] Resolve the stray `khmerlesson-app/khmerlesson-app/ios/Pods/` directory
+  * Current behavior: `[NEEDS INVESTIGATION]` — appears to be a misplaced `pod install` artifact, not part of tracked config.
+  * Target behavior: confirm with the user, then remove if indeed stray.
+  * Dependencies: none.
+
+* [ ] Produce first Android development build
+  * Target behavior: `eas build --profile development --platform android` (or `npx expo run:android`) to validate the whole config end-to-end before deeper Android work continues.
+  * Dependencies: package name set; feeds every other item in this section.
+
+#### Phase 4.2 — Android Authentication
+
+Current state: Google Sign-In (`app/auth/login.tsx:7,46-52`) uses `expo-auth-session/providers/google` configured with `webClientId` and `iosClientId` env vars — **no `androidClientId`**. Additionally, `.env.example` doesn't document `EXPO_PUBLIC_WEB_CLIENT_ID`, `EXPO_PUBLIC_IOS_CLIENT_ID`, or `EXPO_PUBLIC_REVERSED_IOS_CLIENT_ID` at all, even though `login.tsx:21-22,28` reads them — presumably set in an untracked `.env`/EAS secrets. Apple Sign-In is already correctly gated to iOS only (`Platform.OS === 'ios'`, `login.tsx:163`).
+
+* [ ] Register an Android OAuth client + SHA-1 fingerprint(s)
+  * Target behavior: register in Google Cloud Console for the chosen package name; needs both the debug keystore's SHA-1 and, critically, Play App Signing's release SHA-1 (only known after Play Console upload-key setup — sequencing dependency with Phase 4.6).
+  * Likely affected components: Google Cloud Console config (external), Phase 4.6's Play App Signing item.
+  * Dependencies: Phase 4.1 package name; Phase 4.6 Play App Signing enrollment.
+
+* [ ] Add `androidClientId` to the Google auth request
+  * Target behavior: pass the new Android OAuth client ID into `Google.useAuthRequest(...)` at `app/auth/login.tsx:46-52`.
+  * Dependencies: item above.
+
+* [ ] Document Android env vars
+  * Target behavior: add the Android-specific client ID vars to `.env.example` and to `eas.json`'s Android build profiles, alongside the existing iOS ones (currently also missing from `.env.example`).
+  * Dependencies: none.
+
+* [ ] Re-verify session persistence/logout on Android specifically
+  * Current behavior: the AsyncStorage/SecureStore-backed store code is already cross-platform, but device-level behavior is unverified.
+  * Dependencies: Phase 1 items; first Android build.
+
+#### Phase 4.3 — Google Play Billing
+
+Current state: `purchaseService.ts` already targets `react-native-iap`'s unified API — the purchase request already has a `google: { skus: [productId] }` branch stubbed in (`purchaseService.ts:300-306`), and `extractJws()` (`purchaseService.ts:84-91`) already falls through to `purchase.purchaseToken` for non-iOS platforms. None of this has been tested on Android. Backend verification (`server/services/iap/ios/storekit2/`) is entirely Apple-specific; no Google Play equivalent exists. `shared/schema.ts`'s `subscriptions.platform` and `subscriptionPlans.productIdAndroid` already anticipate this, unused today.
+
+* [ ] Create Google Play subscription products
+  * Target behavior: mirror the existing 3 iOS plans in Play Console; write resulting product IDs into `subscription_plans.productIdAndroid` via the existing dashboard admin UI (column already exists).
+  * Dependencies: Play Console app creation (Phase 4.6).
+
+* [ ] Build the Google Play verification service
+  * Target behavior: new `server/services/iap/android/playbilling/` (mirroring the shape of `server/services/iap/ios/storekit2/`) implementing purchase/subscription verification via the Play Developer API. `[VERIFY CURRENT GOOGLE PLAY REQUIREMENT]` for the currently-recommended verification approach (Real-time Developer Notifications + `purchases.subscriptions.get`, vs. newer Play Billing Library APIs).
+  * Dependencies: product creation.
+
+* [ ] Route `POST /api/v1/subscriptions` by platform
+  * Target behavior: branch to the new Android verification service based on `platform`, alongside the existing iOS JWS path.
+  * Dependencies: verification service.
+
+* [ ] Purchase acknowledgement
+  * Target behavior: confirm `react-native-iap`'s `finishTransaction` (already used at `purchaseService.ts:134,143,211`) performs Google's required acknowledgement (purchases unacknowledged after 3 days are auto-refunded), or add a separate ack call if not.
+  * Dependencies: first Android purchase test.
+
+* [ ] Pending purchase state
+  * Current behavior: `[NEEDS INVESTIGATION]` — no equivalent concept in the current iOS-only flow (Google Play supports pending transactions, e.g. cash/carrier billing).
+  * Dependencies: verification service.
+
+* [ ] Cancelled/expired/renewal handling for Android
+  * Target behavior: mirror the existing upsert-and-expire-other-rows logic (`context/subscription-debugging.md`: "now expires the user's other active/trial rows") for the Android path.
+  * Dependencies: routing by platform.
+
+* [ ] Purchase restoration/reconciliation on Android
+  * Current behavior: `reconcileAvailablePurchases()` (`purchaseService.ts:181-223`) already uses the platform-generic `iap.getAvailablePurchases()`, so it's likely to work largely as-is once `extractJws`/backend support Android — verify, don't rewrite.
+  * Dependencies: verification service.
+
+* [ ] Billing error handling on Android
+  * Current behavior: `handlePurchaseError` (`purchaseService.ts:154-167`) already checks cancellation generically (`iap.isUserCancelledError?.(error) ?? error.code === iap.ErrorCode?.UserCancelled`), not iOS-specific — verify Android error codes surface correctly through the same path.
+  * Dependencies: first Android purchase test.
+
+* [ ] Interrupted-purchase polling — Android applicability
+  * Current behavior: the existing polling fallback (`ENTITLEMENT_POLL_INTERVAL_MS`, `purchaseService.ts:314-353`) was built specifically for a documented *iOS* StoreKit event-delivery-lag bug (`context/subscription-debugging.md` root cause #3). `[NEEDS INVESTIGATION]` whether Google Play has an equivalent lag, or whether polling can stay iOS-only to save Android battery/network.
+  * Dependencies: verification service.
+
+* [ ] Set up Google Play license testers
+  * Target behavior: Play Console internal testing track + license tester accounts, before real-money verification testing.
+  * Dependencies: Play Console app creation.
+
+#### Phase 4.4 — Unified Subscription Entitlement
+
+Current state (see root-cause finding above): `hasAccessToCourse` already only reads `subscriptions`/`subscription_plan_courses`, with `platform` as a plain column, not a branch in the logic — entitlement is **already** platform-independent by construction. This phase is narrower than its original framing suggests.
+
+* [ ] Confirm (not rebuild) `createOrUpdateSubscription` accepts a Google Play-verified purchase unmodified
+  * Current behavior: keyed by `originalTransactionId` (unique) + `platform`. `[NEEDS INVESTIGATION]` exact field mapping — Google's purchase token/orderId plays the same semantic role as Apple's `originalTransactionId` but differs in format/length; verify the column accommodates it.
+  * Dependencies: Phase 4.3's routing item.
+
+* [ ] Cross-platform login QA
+  * Target behavior: a user who purchased on iOS and installs the Android app under the same account should see correct access immediately, since access derives from `userId` not device — should already work; verify as part of Phase 4.7 rather than building anything new.
+  * Dependencies: Phase 4.7.
+
+* [ ] Account linking across providers
+  * Current behavior: `[NEEDS INVESTIGATION]` — backend registration (`register-auth-service`) already keys users by email, so a user signing in with Google on Android and Apple on iOS under the same email likely already unifies correctly; needs explicit verification, not an assumption.
+  * Dependencies: Phase 4.7.
+
+#### Phase 4.5 — Cross-Platform Quiz Progress
+
+* [ ] Verify — not build — cross-platform progress
+  * Current behavior: once Phase 3's API exists, it's inherently platform-independent (same REST API, same `userId` scoping); the client-side sync code (Phase 3) has no iOS-specific APIs.
+  * Target behavior: QA verification only (folded into Phase 4.7) that completing a quiz on iOS and logging into Android with the same account shows the progress, and vice versa.
+  * Dependencies: Phase 3 (cloud quiz progress) fully shipped.
+
+#### Phase 4.6 — Google Play Console & Store Requirements
+
+**Play Console Setup**
+* [ ] Create the application in Play Console — package name must match Phase 4.1's decision (irreversible once set).
+* [ ] Play App Signing enrollment — `[VERIFY CURRENT GOOGLE PLAY REQUIREMENT]` (Google's now-default policy for new apps).
+* [ ] Upload key / keystore setup — `[NEEDS INVESTIGATION]` whether to use EAS-managed Android credentials or a manually generated keystore; `eas.json` shows no Android credentials config yet.
+* [ ] Internal testing track setup.
+* [ ] Closed/open testing — `[VERIFY CURRENT GOOGLE PLAY REQUIREMENT]` whether Google's closed-testing prerequisite (currently ~20 testers for 14 days for new developer accounts) applies here; `[NEEDS INVESTIGATION]` whether this is a new or an existing Play Console developer account.
+* [ ] Production track submission.
+
+**Store Listing**
+* [ ] App name, short/full description, category, contact/support email, website — `[NEEDS INVESTIGATION]`, not yet drafted anywhere in this repo.
+* [ ] Icon/screenshots/feature graphic — phone screenshots can be captured once an Android build runs; no tablet-specific Android layout work has been verified (`supportsTablet: true` exists only in `app.json`'s `ios` block).
+* [ ] Privacy policy — already exists and is live: `GET /privacy-policy` on the dashboard (`attached_assets/khmer-privacy-policy.html`), already linked from `app/auth/login.tsx:24,221` and `app/(tabs)/me.tsx`. Reuse the same URL for Play Console.
+* [ ] Khmer localization of the listing — `[NEEDS INVESTIGATION]`, business decision (audience is likely English-speaking learners of Khmer, not Khmer speakers).
+
+**Compliance**
+* [ ] Data Safety form — needs an audit of what's actually collected: auth email/name via Google/Apple, plus the debug-log pipeline's `context` payloads (can include `userId`/`platform`, per `shared/schema.ts`'s `debugLogs.context: jsonb`). `[VERIFY CURRENT GOOGLE PLAY REQUIREMENT]` for the current form's categories.
+* [ ] Content rating questionnaire.
+* [ ] Target audience declaration — `[NEEDS INVESTIGATION]`, business decision.
+* [ ] Ads declaration — no ad SDK found in `package.json`; should be a straightforward "no ads" declaration, but confirm nothing was added elsewhere.
+* [ ] App access / reviewer credentials — Apple's live rejection (`error-app-review.md`, Guideline 2.1(b)) was specifically about reviewers being unable to locate/use the IAP flow; carry that lesson into the Play submission notes explicitly (working test-purchase instructions).
+* [ ] Subscription disclosures — Apple's same rejection (`error-app-review.md`, Guideline 3.1.2(c)) flagged missing in-app subscription length/price/ToU/privacy-policy-link disclosures. Google Play has an analogous requirement. `[VERIFY CURRENT GOOGLE PLAY REQUIREMENT]`, but recommend fixing this in `app/subscription/index.tsx` regardless of platform — it's currently blocking the live App Store submission and the same fix likely satisfies both stores.
+* [ ] Account deletion — `app/(tabs)/me.tsx` already has a "Delete Account" UI entry that only shows a confirm alert with **no backend call** (per the existing Completed log: "Delete Account (alert confirm → TODO API)"). Google Play's account-deletion policy requires this to actually work. Needs a real `DELETE /api/me` (or similar) implementation — this was already a known gap before this investigation, now tied to a hard Play Store requirement.
+
+#### Phase 4.7 — Android Testing
+
+**Authentication**: fresh login · logout · re-login · app restart · session restoration · expired session · failed token refresh · Android Google Sign-In client (Phase 4.2) specifically.
+
+**Subscription**: new subscription · existing subscriber · restoration · renewal · cancellation · expiration · purchase failure · interrupted purchase · backend verification failure · offline startup · login on another device · cross-platform entitlement (Phase 4.4).
+
+**Quiz Progress**: start quiz · partial progress (once in scope) · complete quiz · app restart · logout/login · reinstall · different device · iOS → Android restoration · Android → iOS restoration · offline progress · sync after reconnect · legacy migration (Phase 3A).
+
+**Device/UI**: small/large Android phones · screen densities · supported Android versions · keyboard · navigation/back behavior · audio/media (TTS via `expo-audio`) · poor network · airplane/offline mode · **Khmer text rendering** — `khmerlesson-app/CLAUDE.md`'s "Khmer Text" section documents a ~1.6× `lineHeight`/`fontSize` ratio tuned to prevent "Khmer stacked-glyph clipping," presumably tuned against iOS's text rendering; Android's text engine can differ, so this needs explicit re-verification, not an assumption the same ratio holds.
+
+#### Phase 4.8 — Release Pipeline
+
+`Development → Android Local Build → Internal Testing → Regression Testing → Closed Testing (if required) → Production Candidate → Play Pre-launch Report → Production/Staged Rollout → Post-release Monitoring`
+
+* [ ] Configure Android submission — `eas.json`'s `submit.production` is currently an empty `{}` for iOS too; `[NEEDS INVESTIGATION]` whether iOS submission is done via `eas submit` CLI flags rather than `eas.json` config, and whether the same approach works for Android or whether a Play Console service-account JSON needs adding to `eas.json`'s `submit.production.android`.
+* [ ] Document rollback/hotfix process — `[NEEDS INVESTIGATION]` whether one exists informally for iOS today; none is documented in this repo for either platform.
+
+---
+
+### P2 — Release Quality
+
+#### Observability
+
+Current state: a full trace-id logging pipeline already exists and is actively used in production debugging (`src/shared/utils/logger.ts` ↔ `server/utils/trace-logger.ts` ↔ `debug_logs` table ↔ dashboard "Debug Logs" page — see `context/subscription-debugging.md`). No crash reporting SDK (Sentry/Crashlytics/Bugsnag) exists in `package.json` — uncaught exceptions and native crashes are not captured anywhere today.
+
+**Decided 2026-08-30**: no new vendor (Sentry or otherwise) this cycle — reuse and extend the existing logging/trace pipeline instead.
+
+* [ ] Wire uncaught-exception capture into the existing pipeline (crash-reporting substitute)
+  * Current behavior: the `debug_logs` pipeline is best-effort and buffer-then-flush-on-interval (`FLUSH_INTERVAL_MS = 15000`, `src/shared/utils/logger.ts:34`) — fine for request-scoped tracing, but a hard crash can kill the JS thread before the next scheduled flush, losing the log.
+  * Target behavior: register a global JS error handler (`ErrorUtils.setGlobalHandler` in React Native, plus a top-level React Error Boundary around the app root) that calls `logger.error(...)` with the error/stack and then immediately calls `flushLogs()` (bypassing the 15s interval) before the error is allowed to propagate/crash — reusing the existing transport, not a new one.
+  * Likely affected components: `app/_layout.tsx` (init point / error boundary), `src/shared/utils/logger.ts` (already exports `flushLogs()` for exactly this kind of ad-hoc immediate flush, currently only used on a natural flow completion in `purchaseService.ts`).
+  * Dependencies: none.
+  * Acceptance criteria: an uncaught JS exception during a manual test produces a row in `debug_logs` with a stack trace, without needing to wait for the periodic flush.
+  * Known limitation to document, not solve this cycle: this approach cannot capture native (non-JS) crashes the way a dedicated crash SDK would — acceptable tradeoff for staying vendor-free this cycle, per the decision above.
+
+* [ ] Wire new lifecycle events from Phases 1-3 into the existing pipeline
+  * Target behavior: `session_restore_started/restored/refresh_failed`, `subscription_sync_started/active/failed`, `quiz_progress_sync_started/synced/failed`, `legacy_progress_migrated` — almost entirely additive; transport/buffering/viewer already exist.
+  * Dependencies: the respective phases landing.
+
+* [ ] Extend billing-failure tracing to the Android verification path
+  * Current behavior: `traceLogger` is already wired into every branch of `POST /api/v1/subscriptions`'s iOS path (per `context/subscription-debugging.md`).
+  * Target behavior: identical coverage for the new Android verification path (Phase 4.3).
+  * Dependencies: Phase 4.3.
+
+* [ ] Log migration failures (Phase 3A) the same way.
+
+* [ ] Confirm redaction discipline on all new events
+  * Current behavior: existing code generally avoids logging sensitive values (e.g. `purchaseService.ts` logs `productId`/`transactionId`/status, not raw JWS) — the one known violation is the raw-token `console.log`s under Phase 1, already tracked above.
+  * Target behavior: no access/refresh tokens, purchase JWS/purchase-token values, or other sensitive payloads in any new `context` object.
+  * Dependencies: none — apply as each new event is added.
+
+#### Testing
+
+**Decided 2026-08-30**: yes, but narrowly — focused unit tests around this cycle's high-risk logic only, not a new test framework/suite buildout, and not component/navigation/E2E coverage. Neither repo has any test tooling installed today (`khmerlesson-app/package.json` has no `jest`/`jest-expo`/testing-library; `khmerlesson-dashboard/CLAUDE.md` confirms "No test suite is configured"), so a minimal `jest-expo` setup (the standard, Expo-supported test runner for this stack) is the smallest addition that satisfies the decision — install it for exactly the targets below, not as general-purpose scaffolding.
+
+High-risk targets identified during this investigation (pure logic, no rendering/navigation — the kind of thing that regresses silently and is tedious to re-verify by hand every time):
+
+* [ ] Unit tests: token-refresh interceptor + dedup (Phase 1) — expired-token retry succeeds once refreshed; concurrent callers trigger exactly one refresh call; invalid refresh token surfaces the correct failure path.
+  * Likely affected components: `src/services/api.ts`, `src/features/auth/store/authStore.ts`.
+  * Dependencies: Phase 1's interceptor + dedup items being implemented.
+
+* [ ] Unit tests: subscription status derivation (Phase 2) — `unknown`/`loading` never collapses into "no subscription" in the store's status logic.
+  * Likely affected components: `src/features/subscriptions/store/subscriptionStore.ts`.
+  * Dependencies: Phase 2's explicit-status item being implemented.
+
+* [ ] Unit tests: per-user storage namespacing + identity-switch rehydration (Phase 3 account-boundary fix) — switching the active user never leaks the previous user's cached progress, and a returning user's own cached progress reappears.
+  * Likely affected components: `src/features/lessons/store/progressStore.ts`, `src/features/quizzes/store/quizScoreStore.ts`.
+  * Dependencies: the namespacing item being implemented.
+
+* [ ] Unit tests: local/cloud progress conflict-resolution rule (Phase 3 + 3A) — cloud-empty/local-present, cloud-newer, local-newer cases all resolve per the documented rule.
+  * Likely affected components: the client-side progress sync services (Phase 3).
+  * Dependencies: the conflict-handling item being implemented.
+
+Explicitly out of scope for this cycle: component tests, navigation/routing tests, E2E device tests, and any Android-specific automated testing (Phase 4.7 stays a manual QA checklist).
+
+---
+
+## Acceptance Criteria (per objective)
+
+- **Authentication**: a valid returning user can reopen KhmerLesson and have their session restored/refreshed without an unnecessary login prompt.
+- **Subscription**: an existing subscriber can open the app or log back in and have entitlement restored automatically, without visiting the Plan screen.
+- **Progress (Quiz + Lesson Completion)**: both belong to the user's cloud account and survive logout/login, reinstall, and supported cross-device usage; existing local progress migrates safely; and — new finding from this investigation — progress no longer leaks across accounts sharing one device (fixed via per-user namespacing, not clearing on logout).
+- **Android**: a production Android build installs through a Google Play testing track with all core functionality working.
+- **Google Play Subscription**: an Android user can purchase a plan through Google Play, have it securely verified, and receive correct course entitlement.
+- **Cross-platform**: authentication, entitlement, and quiz progress are account-level, not unnecessarily device-bound.
+
+## Definition of Done for this improvement cycle
+
+1. Authentication/session restoration is reliable.
+2. Subscription entitlement restores automatically.
+3. Course locking accurately reflects subscription state.
+4. Quiz progress and lesson completion are both persisted in the cloud.
+5. Existing local quiz/lesson progress migrates safely; the account-boundary leak is fixed via per-user namespacing.
+6. Quiz progress and lesson completion survive logout/login and device changes.
+7. Android production build is stable.
+8. Google Play Billing works correctly.
+9. Android subscriptions integrate with backend entitlement.
+10. Required Play Store compliance information is complete.
+11. Required Play testing is completed.
+12. Production Android release is approved and deployed.
+13. The high-risk logic called out under Testing (token refresh, subscription status, storage namespacing, progress conflict resolution) has focused automated unit test coverage; everything else remains documented manual QA.
+14. Production failures — including uncaught exceptions, via the new global-error-handler wiring — can be diagnosed through the existing (now extended) logging pipeline, without a new crash-reporting vendor.
+
+---
+
 ## Open Questions
 
 - **Quiz 2**: Deferred — client wants a cost estimate first. Show "in progress" placeholder (B4 above). Full implementation (retry-wrong-answers loop) is a separate scope item.
 - **`order` field on Course**: `GET /api/v1/main-lessons` now returns `order`. Should the home screen sort courses by `order`? Assume yes unless backend already returns them sorted.
 - **Subscription + guest users**: `GET /api/v1/subscriptions/me` requires auth. Guest users have no subscription. Course list with no token still works (free courses show `hasAccess: true`). Locked course tap for a guest → navigate to `/auth/login` first, then `/subscription` after login? Clarify UX if needed.
+
+### Improvement Roadmap — decisions needed before implementation (2026-08-30)
+
+All six items below were open as of 2026-08-30 and resolved the same day:
+
+- ~~**Android application ID**~~ — **resolved**: `com.digital606.khmerlesson`, set in `app.json`. See the checked-off item under Phase 4.1 above for the full audit of what was/wasn't changed.
+- ~~**Quiz Phase 3 scope**~~ — **resolved**: final score + completion state only. No resumable/per-question attempts unless the current UX already supported it (it doesn't) — see the "Scope decided" note at the top of the Account-Scoped Progress Cloud Sync section above.
+- ~~**Lesson-completion progress**~~ — **resolved**: yes, included in the same account-scoped cloud progress architecture as quiz scores — see the same section above (now covers both `quiz_attempts` and `lesson_completions`).
+- ~~**Account-boundary bug fix approach**~~ — **resolved**: per-user namespaced local storage, not clear-on-logout — see the "Namespace local progress storage by user" item above.
+- ~~**Crash reporting**~~ — **resolved**: no vendor (Sentry or otherwise) this cycle; reuse and extend the existing `debug_logs`/`logger` pipeline with a global-error-handler hook instead — see the Observability section above.
+- ~~**Automated testing**~~ — **resolved**: yes, but narrowly — focused unit tests on this cycle's specific high-risk logic only (token refresh, subscription status derivation, storage namespacing, progress conflict resolution), no new test-framework buildout beyond a minimal `jest-expo` install for those targets — see the Testing section above.
+
+Still open:
+- **In-app subscription disclosures**: Apple's live rejection (`error-app-review.md`, Guideline 3.1.2(c)) requires subscription length/price/ToU/privacy-policy links directly in the purchase flow (`app/subscription/index.tsx`), not just the login footer. This blocks the current App Store submission independent of Android work — worth prioritizing regardless of sequencing, since Google Play likely has an analogous requirement.
+- **Stray nested `khmerlesson-app/khmerlesson-app/ios/Pods/` folder**: looks like a misplaced `pod install` artifact — confirm before deleting.
 
 ## Architecture Decisions
 
@@ -102,6 +652,7 @@ Work these in order. Each item is one unit; run `npx tsc --noEmit` and update th
 - Old `constants/theme.ts` and boilerplate components kept untouched; new screens use the new design system only
 - Mock data lives in `context/mock-data/` until API/SQLite layer is ready
 - SQLite offline caching deferred until API-only layer is proven (see earlier recommendation — premium offline adds complexity around entitlement caching)
+- Subscription entitlement (`hasAccessToCourse`, `server/features/subscriptions/controller/controller.ts`) is already platform-independent by construction — `platform` is a data column, not branching logic — so the Google Play launch's "unified entitlement" work (Phase 4.4) is scoped as verification, not a new abstraction layer
 
 ## Session Notes
 
