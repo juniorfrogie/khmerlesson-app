@@ -29,6 +29,32 @@ function isExpiredOrExpiringSoon(accessToken: string | undefined): boolean {
   return Date.now() >= exp * 1000 - EXPIRY_SKEW_SECONDS * 1000;
 }
 
+// Shared by hydrate() (cold start) and revalidateIfExpiring() (foreground
+// resume) — checks the currently-stored token and refreshes it if it's
+// expired/expiring, signing out only if the refresh itself fails.
+async function refreshIfNeeded(
+  get: () => AuthStore,
+  traceId: string,
+  trigger: 'cold_start' | 'foreground',
+): Promise<void> {
+  const { tokens } = get();
+  if (!isExpiredOrExpiringSoon(tokens?.accessToken)) {
+    logger.info(traceId, 'session_restored', { refreshed: false, trigger });
+    return;
+  }
+  try {
+    await get().refreshTokens();
+    logger.info(traceId, 'session_restored', { refreshed: true, trigger });
+  } catch (err) {
+    // Refresh token itself invalid/expired/blacklisted — this is a
+    // genuinely dead session, not a merely-expired access token, so clear
+    // it now rather than letting every subsequent screen rediscover the
+    // same failure independently.
+    logger.warn(traceId, 'session_refresh_failed', { message: (err as Error).message, trigger });
+    await get().signOut();
+  }
+}
+
 interface AuthStore {
   user: User | null;
   tokens: AuthTokens | null;
@@ -40,6 +66,7 @@ interface AuthStore {
   signOut: () => Promise<void>;
   hydrate: () => Promise<void>;
   refreshTokens: () => Promise<void>;
+  revalidateIfExpiring: () => Promise<void>;
 }
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
@@ -84,24 +111,21 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const { user, tokens } = JSON.parse(raw);
       set({ user, tokens, isAuthenticated: true, isGuest: false });
 
-      if (isExpiredOrExpiringSoon(tokens?.accessToken)) {
-        try {
-          await get().refreshTokens();
-          logger.info(traceId, 'session_restored', { refreshed: true });
-        } catch (err) {
-          // Refresh token itself invalid/expired/blacklisted — this is a
-          // genuinely dead session, not a merely-expired access token, so
-          // clear it now rather than letting every subsequent screen
-          // rediscover the same failure independently.
-          logger.warn(traceId, 'session_refresh_failed', { message: (err as Error).message });
-          await get().signOut();
-        }
-      } else {
-        logger.info(traceId, 'session_restored', { refreshed: false });
-      }
+      await refreshIfNeeded(get, traceId, 'cold_start');
     } catch {
       // ignore corrupt storage
     }
+  },
+
+  // Called when the app returns to the foreground (see app/_layout.tsx's
+  // AppState listener) — the access token can have expired while backgrounded,
+  // and without this the first API call after resuming would surface a
+  // (self-healing, but visible) TOKEN_EXPIRED round trip instead of already
+  // holding a fresh token by the time the user sees anything.
+  revalidateIfExpiring: async () => {
+    const { isAuthenticated, tokens } = get();
+    if (!isAuthenticated || !tokens) return;
+    await refreshIfNeeded(get, newTraceId(), 'foreground');
   },
 
   refreshTokens: async () => {

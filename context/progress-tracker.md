@@ -144,12 +144,10 @@ Current architecture: Zustand store (`src/features/auth/store/authStore.ts`) per
   * Likely affected components actually touched: `src/features/auth/store/authStore.ts` only.
   * Verified: `tsc --noEmit` clean.
 
-* [ ] Foreground/background session revalidation
-  * Current behavior: `[NEEDS INVESTIGATION]` — no `AppState` listener for auth was found in `app/_layout.tsx` or elsewhere; session state is only touched at cold start.
-  * Target behavior: revalidate/refresh the token when the app returns to `active` after being backgrounded, so a returning user doesn't see a flash of forbidden/unauthenticated state before the interceptor above self-heals it.
-  * Likely affected components: `app/_layout.tsx` or a new auth hook.
-  * Dependencies: proactive startup validation (above).
-  * Acceptance criteria: backgrounding the app past the access-token TTL and returning to foreground shows no flash of locked/unauthenticated UI.
+* [x] Foreground/background session revalidation — **done 2026-08-31**
+  * Implementation: `authStore.ts`'s cold-start expiry-check/refresh logic was extracted into a shared `refreshIfNeeded(get, traceId, trigger)` helper (`trigger: 'cold_start' | 'foreground'`, so the two call sites are distinguishable in `debug_logs`), used by both `hydrate()` and a new `revalidateIfExpiring()` store method. `app/_layout.tsx` now registers an `AppState.addEventListener('change', ...)` listener that calls `revalidateIfExpiring()` whenever the app returns to `'active'`, cleaned up on unmount.
+  * `revalidateIfExpiring()` is a no-op for guests/unauthenticated sessions (`isAuthenticated`/`tokens` guard) — only ever acts on an actual signed-in session.
+  * Verified: `tsc --noEmit` and `eslint` both clean on the touched files.
 
 * [ ] Move auth tokens to secure storage
   * Current behavior: `auth_state` (user + `accessToken` + `refreshToken`) lives in plain `AsyncStorage` (`authStore.ts:7,32,50`) — unencrypted on both platforms. `expo-secure-store` is not in `package.json`.

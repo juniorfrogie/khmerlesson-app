@@ -1,13 +1,22 @@
 import { useEffect } from 'react';
+import { AppState, AppStateStatus } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { Colors } from '@/src/shared/theme';
 import { startLogFlushing } from '@/src/shared/utils/logger';
+import { useAuthStore } from '@/src/features/auth/store/authStore';
 
 export default function RootLayout() {
   useEffect(() => {
     startLogFlushing();
+
+    const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        useAuthStore.getState().revalidateIfExpiring().catch(() => {});
+      }
+    });
+    return () => subscription.remove();
   }, []);
 
   return (
