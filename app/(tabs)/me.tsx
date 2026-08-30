@@ -76,7 +76,12 @@ export default function MeScreen() {
             }
 
             try {
-              await apiDelete(`/api/users/${currentUser.id}`, accessToken);
+              // Self-service endpoint, scoped server-side to the caller's
+              // own account (server/api.ts) — the admin-only
+              // DELETE /api/users/:id this used to call rejects every
+              // non-admin user, so a real user's deletion request silently
+              // failed here before.
+              await apiDelete('/api/v1/me', accessToken);
               await doSignOut();
               router.replace('/auth/login');
             } catch (e: unknown) {
