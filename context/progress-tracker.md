@@ -727,3 +727,51 @@ None of these three fixes touch backend code, add new endpoints, or change any r
 * Database setup — no `DATABASE_URL` reachable in this environment; migration application and live-database verification of the new progress endpoints, account deletion, and authorization checks are all still pending a human running them against a real dev/staging database.
 * Google Cloud Console / Play Console access — Android OAuth client + SHA-1 registration, Play Console app creation, Play Billing setup (all pre-existing blockers, unchanged).
 * Human decision on the namespacing-race edge case above (low priority).
+
+---
+
+## Database Migration Verification & Live Integration Test (2026-08-31, follow-up session)
+
+`.env` became available in `khmerlesson-dashboard` between sessions (user-provided, `DATABASE_URL=postgresql://postgres@localhost:5434/dev`). This closes the single biggest gap the prior session flagged: the entire migration + Phase 3 backend had been type-checked but never exercised against a live database. This session did that.
+
+### Environment identity
+
+Local Postgres 12 (Postgres.app) on `localhost:5434`. The `dev` database did not exist on the server at session start — created fresh (`CREATE DATABASE dev`) and schema-initialized via `drizzle-kit push` from `shared/schema.ts` earlier in this session, before this validation task began. Unambiguously local/dev: newly created, empty of any real user data, matches the project's own documented dev connection string format. Not production, not uncertain — migration execution was not blocked.
+
+### Migration — now applied and verified live
+
+* `migrations/0004_cloud_progress.sql` re-confirmed to match `shared/schema.ts` exactly (already reviewed by the prior session).
+* Applied directly (`psql -f migrations/0004_cloud_progress.sql`) — real run, not the earlier `db:push` (which had already created the same tables from the current `schema.ts` before this migration file was executed, since `db:push` diffs the live schema file directly rather than replaying migration files).
+* **Idempotency proven, not just inferred**: ran the file a second time; every `CREATE TABLE`/`CREATE INDEX` emitted `NOTICE: ... already exists, skipping`, zero errors.
+* Resulting schema inspected via `\d quiz_attempts` / `\d lesson_completions` — columns, types, nullability, defaults, PK, unique constraints, indexes, and all 6 FK `ON DELETE CASCADE` clauses match the migration file and `shared/schema.ts` exactly.
+* **New finding, not previously known**: the dashboard's `server/index.ts` runs Drizzle's `migrate()` against the `migrations/` folder automatically on every server boot, before accepting traffic (`await migrate(db, { migrationsFolder: "./migrations" })`, `server/index.ts:55`). Confirmed live — starting `npm run dev` against the fresh `dev` DB logged `Database migrations applied` and populated `drizzle.__drizzle_migrations` with all 5 entries (0000–0004) automatically. **Practical implication: no manual `db:migrate` step is needed for production either** — migration 0004 will apply itself automatically and safely on the next production deploy, the same way it just did here, as long as production's `__drizzle_migrations` table already has entries for 0000–0003 (which it should, being the currently-running app).
+
+### Live backend integration test (real HTTP requests against the running dev server + migrated DB, not just code inspection)
+
+Registered two real test users (A, B) via `POST /api/auth/register`, plus minimal fixture content (one main_lesson, lesson, quiz) inserted directly for FK satisfaction. Then, over real HTTP:
+
+* **Progress persistence**: `POST /api/v1/lesson-progress` and `POST /api/v1/quiz-progress` correctly persisted rows; `GET /api/v1/progress` returned them back correctly shaped.
+* **Authorization / account isolation**: user B's `GET /progress` returned empty while A had data; **B's attempt to inject `"userId":1` (A's id) into a `POST /lesson-progress` body was ignored** — the row was correctly created under B's own authenticated id (server-side `req.user.id` override confirmed live, not just by reading the code).
+* **Unauthenticated requests**: `GET /progress`, `POST /quiz-progress`, `DELETE /me` all correctly returned 401 with no token.
+* **Account deletion cascade**: B (who had progress rows) called `DELETE /api/v1/me` → succeeded, B's `quiz_attempts`/`lesson_completions` rows were gone from the DB (cascade confirmed by direct query), B's just-used token was blacklisted (reuse → 401), and **A's account and progress rows were completely untouched** — confirmed by DB query after the deletion.
+* **Backward compatibility, confirmed with diff evidence**: `git diff e3e2464..HEAD -- server/api.ts` (the pre-Phase-3 baseline vs. now) shows the only removed line across all dashboard changes is an `import` statement being replaced by a longer one — every other change is a pure addition. `GET /api/v1/main-lessons` re-tested live and still returns the exact pre-existing response shape (`hasAccess`/`comingSoon`/etc.), unaffected by the new tables/routes.
+* Backend `npm run check` (tsc): clean, re-confirmed against the now-migrated DB.
+
+### Independent cross-check of the mobile-side review (second reviewer, fresh read of current code, no access to the prior session's conclusions)
+
+Commissioned a second, independent code review of the same high-risk mobile logic (auth refresh/dedup, SecureStore migration, subscription state modeling, legacy progress migration, offline sync queue) to check the prior session's self-review. Result: **confirms every claim in the prior session's "Issues Found — all fixed" and "Mobile" sections** — refresh dedup, network-vs-invalid-token handling, SecureStore migration crash-safety, logout completeness, subscription status modeling, legacy-migration idempotency/non-destructiveness, and Restore Purchases code reuse all independently re-verified against current code with matching file:line evidence. No regressions found.
+
+It also surfaced **two new non-blocking findings** the prior session's report did not carry, plus a refinement of one existing claim:
+
+1. **Refinement, not a contradiction**: the prior report stated the `main-lessons` semi-public token-expiry gap is "covered in practice" because proactive refresh runs before the course-list fetch. That's true for the common case, but the cross-check traced a genuine gap in the *reactive fallback*: `GET /api/v1/main-lessons` (semi-public, `khmerlesson-dashboard/server/auth/middleware/authenticate.ts`) never throws on an actually-expired/invalid token — it silently falls through to anonymous (`req.user` undefined), returning HTTP 200 with `hasAccess: false` for non-free courses instead of a `401 TOKEN_EXPIRED`. Since the mobile client (`src/services/api.ts`) only triggers its refresh-and-retry on a *thrown* `TOKEN_EXPIRED` error, a 200 response never triggers a retry, so if the proactive refresh is ever late or fails (not the common path, but not impossible), a stale "locked" course list can get cached (`src/services/hooks/useCourses.ts`) with no automatic self-correction short of an explicit refetch. **Non-blocking** — defense-in-depth gap, not an active bug in normal operation. Proposed fix: either have the server return `401 TOKEN_EXPIRED` for an invalid (not just absent) token on this route, or have `useCourses` retry once after any auth-state transition.
+2. **New**: `src/features/progress/service.ts`'s offline pending-sync queue (`getPending`/`setPending`) does a non-atomic read-modify-write. If a new item is queued (`syncQuizAttempt`/`syncLessonCompletion`, its own independent read-modify-write) while `flushPendingProgress` is still mid-flight (plausible — flush awaits real network round-trips, during which the user can complete another lesson/quiz while still offline), the flush's final write can silently overwrite storage with a snapshot that doesn't know about the new item, **losing that queue entry** (the underlying local progress itself is unaffected — only its cloud-sync retry entry can vanish). **Non-blocking**, narrow timing window. Proposed fix: make queue mutation atomic (re-read-immediately-before-write, or a serialized `updatePending(fn)` helper).
+3. Related, lower-severity: `flushPendingProgress` triggered from foreground-resume (`app/_layout.tsx`) skips the cloud-fetch-before-flush step that the cold-start path does, so its local-only staleness check can't detect a case where another device already synced a newer completion for the same lesson/quiz — a narrow multi-device timing window could let a stale local queue entry overwrite a newer cross-device cloud value. **Cosmetic/non-blocking**. Proposed fix: run a cloud fetch/merge before flushing on foreground resume too.
+
+None of these three require immediate action; none are backward-compatibility or data-loss risks in normal single-device operation. Flagged for a human decision alongside the pre-existing namespacing-race item, not fixed in this session (this was a validation session, not a feature-development one, and the prior session — which was in scope to make fixes — already closed the three defects that were actually blocking).
+
+### Updated Remaining Blockers (supersedes the "Database setup" line above)
+
+* ~~Database setup~~ — **resolved**: migration applied, schema verified, and live HTTP integration tests (persistence, authorization/isolation, account deletion cascade, backward compatibility) all passed against a real migrated dev database.
+* Real iOS/Android device or simulator still required (unchanged) — Keychain/Keystore behavior, background/foreground transitions, real Google/Apple sign-in, the upgrade-path/legacy-migration test against a real previous build, first Android build.
+* Google Cloud Console / Play Console access still required (unchanged).
+* Four low-priority, non-blocking edge cases await a human decision on whether/when to address: the namespacing-race condition (prior session), the `main-lessons` reactive-refresh gap, the offline-queue lost-update race, and the foreground-flush staleness-check gap (all three new, this session).
