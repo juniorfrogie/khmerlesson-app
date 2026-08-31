@@ -800,3 +800,21 @@ Closed all four non-blocking edge cases from the section above, plus two small p
 **Not fixed, flagged separately (unrelated to this cycle)**: `app.json`'s `ios.buildNumber` was found changed locally (`"19"` → `"22"`, plus a stripped trailing newline) at the start of this session, with no corresponding action taken by this session that would explain it (no `eas`/`expo` build process was run, and no command used here touches `buildNumber`). Left untouched and excluded from this session's commit — recommend checking `git diff app.json` and your own recent local tooling/EAS activity before your next iOS build, since an unexpected build-number mismatch with App Store Connect will reject the upload.
 
 **Remaining before Phase 1 (iOS) is actually submittable — human actions only, unchanged from above**: real-device/simulator QA pass, `eas build`/`eas submit` + App Store Connect upload (Apple Developer credentials), replying to Apple's Guideline 2.1(b) rejection, confirming subscription-plan descriptions against Apple 3.1.2(c).
+
+---
+
+## Staging CORS Fix (2026-08-31) [BACKEND — khmerlesson-dashboard]
+
+**Bug**: `server/routes.ts`'s CORS origin check only read `DEV_ORIGIN` inside the `NODE_ENV === "development"` branch. DigitalOcean's staging deployment runs with `NODE_ENV=production` (same as prod), so staging's own origin had no way to get onto the allow-list at all — every staging-origin request was rejected regardless of `DEV_ORIGIN`.
+
+**Fix**: new `server/utils/cors-origins.ts` exports `buildAllowedOrigins(env)`, a pure function extracted from the inline ternary that used to live directly in `routes.ts`. Behavior:
+- The existing dev/prod branch is unchanged: `NODE_ENV === "development"` still gets the 4 localhost origins + `DEV_ORIGIN`; anything else still gets the 2 hard-coded production origins (`cambodianlesson.netlify.app`, `khmerlessons.app`).
+- New: a comma-separated `ALLOWED_ORIGINS` env var is parsed (trimmed, empty entries dropped, `*` never honored — `credentials: true` forbids a wildcard origin anyway) and **appended in both branches**, not gated by `NODE_ENV` — this is what actually fixes staging, since it's additive regardless of which mode the process is running in.
+- `routes.ts` now calls `buildAllowedOrigins({ NODE_ENV, DEV_ORIGIN, ALLOWED_ORIGINS })` once and reuses the result in the existing `cors()` origin callback — no change to the callback's own allow/reject logic or to `credentials`/`allowedHeaders`/`methods`.
+- (Originally placed under `server/config/` — discovered that whole directory is gitignored in this repo (pre-existing rule, unrelated to this change) and would never have been committed; moved to `server/utils/` instead, alongside `trace-logger.ts` etc.)
+
+**Tests**: this repo had zero test tooling installed. Rather than add a new framework for one test file, used Node's built-in test runner via `tsx --test` (already a dependency) — `npm test` now runs `server/utils/__tests__/cors-origins.test.ts` (8 focused tests: prod/dev defaults unchanged, `DEV_ORIGIN` still works, `ALLOWED_ORIGINS` appended in both prod and dev, whitespace/empty-entry trimming, wildcard rejection, unset-`NODE_ENV` fallback). All 8 pass. `npm run check` (tsc) clean — test files are already excluded from the main typecheck via the existing `tsconfig.json` `**/*.test.ts` exclude.
+
+**Live-verified** against a running dev server (`NODE_ENV=development` + `ALLOWED_ORIGINS` set to two fake staging-style URLs): both `ALLOWED_ORIGINS` entries and the existing localhost origin got `Access-Control-Allow-Origin` echoed back; an unrelated origin got no CORS header at all (rejected, as before).
+
+**Staging action required**: add `ALLOWED_ORIGINS=<the actual staging URL>` (comma-separate more than one if needed) to the DigitalOcean staging app's environment variables — no code change needed for additional origins going forward, just this env var.
