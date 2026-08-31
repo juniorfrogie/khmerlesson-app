@@ -520,23 +520,27 @@ Current state: a full trace-id logging pipeline already exists and is actively u
 
 High-risk targets identified during this investigation (pure logic, no rendering/navigation — the kind of thing that regresses silently and is tedious to re-verify by hand every time):
 
-* [ ] Unit tests: token-refresh interceptor + dedup (Phase 1) — expired-token retry succeeds once refreshed; concurrent callers trigger exactly one refresh call; invalid refresh token surfaces the correct failure path.
-  * Likely affected components: `src/services/api.ts`, `src/features/auth/store/authStore.ts`.
-  * Dependencies: Phase 1's interceptor + dedup items being implemented.
+* [x] Test harness — **done 2026-08-31 [MOBILE]**
+  * Implementation: `jest-expo` + `jest` + `@types/jest` installed via `npx expo install jest-expo jest --dev` (SDK-compatible versions). `package.json` gained a minimal `"jest": { "preset": "jest-expo", "setupFiles": ["./jest.setup.js"], "moduleNameMapper": { "^@/(.*)$": "<rootDir>/$1" }, ... }` block and a `"test": "jest"` script. New `jest.setup.js` mocks `@react-native-async-storage/async-storage` with its own official jest mock. `eslint.config.js` gained a scoped override (`files: ['jest.setup.js', '**/__tests__/**/*.{ts,tsx,js}']`) teaching the linter about Jest globals, rather than disabling the rule project-wide.
+  * Deliberately minimal, per the decision: no component-testing library (e.g. `@testing-library/react-native`), no coverage thresholds, no CI wiring — just enough to run the four target suites below.
 
-* [ ] Unit tests: subscription status derivation (Phase 2) — `unknown`/`loading` never collapses into "no subscription" in the store's status logic.
-  * Likely affected components: `src/features/subscriptions/store/subscriptionStore.ts`.
-  * Dependencies: Phase 2's explicit-status item being implemented.
+* [x] Unit tests: token-refresh interceptor + dedup (Phase 1) — `src/services/__tests__/api.test.ts`, 4 tests — **done 2026-08-31 [MOBILE]**
+  * Covers: expired-token retry succeeds once refreshed; concurrent callers (`Promise.all` of 3) trigger exactly one `refreshTokens()` call; a refresh failure surfaces the *original* `TOKEN_EXPIRED` error unchanged; no accessToken means no refresh attempt at all.
+  * `authStore` is mocked (`jest.mock('@/src/features/auth/store/authStore', ...)`) — safe to reference test-file-level `let` state here specifically because `api.ts` reaches it via a *deferred* `require()` inside a function body, called only during test execution (after the test file's own top-level code has already run), not at import time.
 
-* [ ] Unit tests: per-user storage namespacing + identity-switch rehydration (Phase 3 account-boundary fix) — switching the active user never leaks the previous user's cached progress, and a returning user's own cached progress reappears.
-  * Likely affected components: `src/features/lessons/store/progressStore.ts`, `src/features/quizzes/store/quizScoreStore.ts`.
-  * Dependencies: the namespacing item being implemented.
+* [x] Unit tests: subscription status derivation (Phase 2) — `src/features/subscriptions/store/__tests__/subscriptionStore.test.ts`, 6 tests — **done 2026-08-31 [MOBILE]**
+  * Covers: fresh store starts at `'unknown'`, never `'inactive'`; `setLoading()` doesn't touch `mySubscription`; `active`/`expired`/`null` subscriptions derive the correct `status`; `setError()` moves to `'error'` **without** downgrading a previously-confirmed subscription (the concrete regression this field exists to prevent).
 
-* [ ] Unit tests: local/cloud progress conflict-resolution rule (Phase 3 + 3A) — cloud-empty/local-present, cloud-newer, local-newer cases all resolve per the documented rule.
-  * Likely affected components: the client-side progress sync services (Phase 3).
-  * Dependencies: the conflict-handling item being implemented.
+* [x] Unit tests: per-user storage namespacing + identity-switch rehydration (Phase 3 account-boundary fix) — `src/features/lessons/store/__tests__/progressStore.namespacing.test.ts`, 2 tests — **done 2026-08-31 [MOBILE]**
+  * Covers: switching from account 1 → account 2 never leaks account 1's completed lessons; switching back to account 1 restores its own progress; guest progress stays isolated from any signed-in account.
+  * Notable implementation subtlety, documented in the test file: the mock's mutable state has to live *inside* `jest.mock()`'s own factory closure, not a test-file-level `let` — `progressStore.ts` computes its initial namespace eagerly at module load, and ES import evaluation is hoisted above other top-level statements regardless of source order, so an outer `let` can still be uninitialized at that moment. (`quizScoreStore` shares the identical namespacing implementation via the same `identityNamespace.ts` helper — one test suite covers both by construction, so a second near-duplicate suite wasn't added.)
 
-Explicitly out of scope for this cycle: component tests, navigation/routing tests, E2E device tests, and any Android-specific automated testing (Phase 4.7 stays a manual QA checklist).
+* [x] Unit tests: local/cloud progress conflict-resolution rule (Phase 3 + 3A) — `src/features/quizzes/store/__tests__/quizScoreStore.test.ts`, 5 tests — **done 2026-08-31 [MOBILE]**
+  * Covers: a fresh local write applies; a newer write overwrites an older one; the core fix — an older (e.g. stale cloud) write does **not** clobber a newer local one; a write with no existing entry always applies regardless of timestamp; `completedAt` defaults correctly to "now" on the normal local-completion path.
+
+Verified: `npx jest` → 4 suites, 18 tests, all passing. `tsc --noEmit` and `expo lint` both clean (lint's full-project baseline — 5 pre-existing errors in `app/quiz-guide.tsx`, 32 pre-existing warnings, none in files this session touched — is unchanged from before this session started, confirmed by diffing against the first lint run of this session).
+
+Explicitly out of scope for this cycle, per the original decision: component tests, navigation/routing tests, E2E device tests, and any Android-specific automated testing (Phase 4.7 stays a manual QA checklist). Backend (`khmerlesson-dashboard`) tests were not added — no DB is reachable in this environment to run anything meaningful against, and the backend logic added this cycle (progress controller, account-deletion route) is thin CRUD over Drizzle with no comparable "easy to silently regress" pure logic the way the four mobile targets above have.
 
 ---
 
