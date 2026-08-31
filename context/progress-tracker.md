@@ -6,16 +6,16 @@ Update this file after every meaningful implementation change. If bugs or any su
 
 Remaining work is split into two phases so iOS can ship independently of Android:
 
-- **Phase 1 — iOS App Store: code-complete.** The full P0 roadmap (auth/session reliability, subscription sync, cloud quiz/lesson progress) plus P2 (observability, testing) is implemented, migrated against a live database, and integration-tested — see "Database Migration Verification & Live Integration Test" and "Phase 1 Close-Out Fixes" below. What remains before an actual App Store submission is **human-only** action, not code: a real-device/simulator QA pass, running `eas build`/`eas submit` with Apple Developer credentials, replying to Apple's existing Guideline 2.1(b) rejection, and confirming subscription-plan descriptions meet Apple 3.1.2(c) content wording. None of these are repository changes.
+- **Phase 1 — iOS App Store: shipped and live.** The full P0 roadmap (auth/session reliability, subscription sync, cloud quiz/lesson progress) plus P2 (observability, testing) is implemented, migrated against a live database, and integration-tested — see "Database Migration Verification & Live Integration Test" and "Phase 1 Close-Out Fixes" below. **Update 2026-08-31**: Apple's Guideline 2.1(b)/3.1.2(c) rejection is resolved — **1.0.2 (build 21) was approved and is now live** on the App Store (see "iOS Release 1.0.2 (21) — Approved & Live" below). No further Phase 1 action is required to ship what's already out; the device/simulator QA checklist remains open as regression coverage for the *next* iOS build, not a blocker for the current one.
 - **Phase 2 — Google Play/Android: deferred, unchanged.** Everything under "P1 — Google Play Launch" (Phase 4.1–4.8) below is untouched and stays exactly as scoped — no code work happens here until Phase 1 ships.
 
 ## Current Phase
 
-- Phase 1 (iOS) code-complete, pending the human actions listed above. Phase 2 (Android/Google Play) not started — see "P1 — Google Play Launch" below.
+- Phase 1 (iOS) shipped and live (1.0.2, build 21). Phase 2 (Android/Google Play) not started — see "P1 — Google Play Launch" below.
 
 ## Current Goal
 
-- Phase D complete — Subscription UX fixes shipped. P0/P2 roadmap complete and live-verified. Next: human QA/App Store Connect actions for Phase 1 (see above), then Phase 2 (Google Play) whenever that's greenlit.
+- Phase D complete — Subscription UX fixes shipped. P0/P2 roadmap complete, live-verified, and now shipped to the App Store. Next: Phase 2 (Google Play) whenever that's greenlit.
 
 ## Completed
 
@@ -797,9 +797,21 @@ Closed all four non-blocking edge cases from the section above, plus two small p
 
 **Verified**: `npx tsc --noEmit` (both repos) clean. `npm run check` (dashboard) clean. `npx expo lint` — 0 errors (down from 5), same pre-existing warnings. `npx jest` — **7 suites, 29 tests, all passing** (was 27; +2 new tests for the two fixes above with dedicated regression coverage). Backend changes live-tested against the already-migrated dev database (see above) plus a smoke re-check that account isolation, progress persistence, and unrelated protected routes are unaffected by the `authenticate.ts` change.
 
-**Not fixed, flagged separately (unrelated to this cycle)**: `app.json`'s `ios.buildNumber` was found changed locally (`"19"` → `"22"`, plus a stripped trailing newline) at the start of this session, with no corresponding action taken by this session that would explain it (no `eas`/`expo` build process was run, and no command used here touches `buildNumber`). Left untouched and excluded from this session's commit — recommend checking `git diff app.json` and your own recent local tooling/EAS activity before your next iOS build, since an unexpected build-number mismatch with App Store Connect will reject the upload.
+**Not fixed, flagged separately (unrelated to this cycle)**: `app.json`'s `ios.buildNumber` was found changed locally (`"19"` → `"22"`, plus a stripped trailing newline) at the start of this session, with no corresponding action taken by this session that would explain it (no `eas`/`expo` build process was run, and no command used here touches `buildNumber`). Left untouched and excluded from this session's commit — recommend checking `git diff app.json` and your own recent local tooling/EAS activity before your next iOS build, since an unexpected build-number mismatch with App Store Connect will reject the upload. **Update 2026-08-31: explained, see "iOS Release 1.0.2 (21) — Approved & Live" below** — this was `eas build`'s remote auto-increment, not an anomaly.
 
-**Remaining before Phase 1 (iOS) is actually submittable — human actions only, unchanged from above**: real-device/simulator QA pass, `eas build`/`eas submit` + App Store Connect upload (Apple Developer credentials), replying to Apple's Guideline 2.1(b) rejection, confirming subscription-plan descriptions against Apple 3.1.2(c).
+**Remaining before Phase 1 (iOS) is actually submittable — human actions only, unchanged from above**: ~~real-device/simulator QA pass, `eas build`/`eas submit` + App Store Connect upload (Apple Developer credentials), replying to Apple's Guideline 2.1(b) rejection, confirming subscription-plan descriptions against Apple 3.1.2(c)~~. **Superseded 2026-08-31 — see below: the submission happened, the rejection is resolved, and the build is live.**
+
+---
+
+## iOS Release 1.0.2 (21) — Approved & Live (2026-08-31, per user confirmation)
+
+Supersedes the Apple rejection recorded in `error-app-review.md` (which covered build **1.0.1 (19)**) and the "Remaining before Phase 1 is submittable" line directly above. Not independently verified by any session here (no App Store Connect access from this environment) — recorded per direct user confirmation, and cross-checked against the repository evidence below.
+
+- **Guideline 2.1(b)** (reviewer couldn't locate the IAP products in the sandbox) — resolved: replied to Apple with steps to reach the purchase flow and confirmed sandbox IAP configuration + Paid Apps Agreement acceptance.
+- **Guideline 3.1.2(c)** (missing required subscription info) — resolved: the in-app side was already confirmed correct by code review (see the "In-app subscription disclosures" correction under Open Questions above — `app/subscription/index.tsx` already had title/description/price/cadence/ToU/privacy-policy links). The actual gap Apple flagged was **App Store Connect metadata** (a Terms of Use/EULA link in the App Description or EULA field, and the Privacy Policy field) — filled in directly in App Store Connect; not a repository change.
+- **Repository evidence consistent with this**: `app.json`'s `version` is now `1.0.2` (bumped from `1.0.1`, committed `1d59d07`); `ios.buildNumber` reads `22` locally — one ahead of the live `21`, consistent with `eas.json`'s `appVersionSource: "remote"` + `build.production.autoIncrement: true` advancing the remote counter (and writing it back into `app.json`) on every `eas build` run, independent of what's committed to git. This is what explains the previously-flagged "unexplained buildNumber jump" two sessions ago — it wasn't unexplained, it's expected EAS behavior, and there's no actual conflict with the live build.
+
+**Phase 1 (iOS) is now fully complete: shipped and live.** The device/simulator QA checklist elsewhere in this tracker remains open as regression coverage for whatever ships *next*, not a blocker for what's already live.
 
 ---
 
