@@ -9,6 +9,21 @@ export const BUCKET_URL = process.env.EXPO_PUBLIC_BUCKET_URL ?? `${BASE_URL}/upl
 // echoes it back and tags any of its own logs for this request with the
 // same id (server/auth/middleware/correlation.ts + server/utils/trace-logger.ts),
 // so a single id can be grepped/queried across both sides.
+// `json?.data ?? json` looks equivalent but isn't: `??` treats an explicit
+// `data: null` (a legitimate envelope value, e.g. "no active subscription")
+// the same as `data` being absent, and falls back to the whole envelope
+// object instead of `null`. That envelope is truthy, so callers expecting
+// `T | null` see a non-null non-T object instead of null. Checking for the
+// `data` key's presence (not its value) distinguishes "enveloped, value is
+// null" from "not enveloped at all" — the latter is the only case that
+// should fall back to the raw json.
+function unwrapEnvelope<T>(json: unknown): T {
+  if (json && typeof json === 'object' && 'data' in json) {
+    return (json as { data: T }).data;
+  }
+  return json as T;
+}
+
 function baseHeaders(accessToken?: string, traceId?: string) {
   return {
     'x-api-key': API_KEY,
@@ -121,7 +136,7 @@ async function rawApiFetch<T>(path: string, accessToken?: string): Promise<T> {
   }
 
   const json = await res.json();
-  return (json?.data ?? json) as T;
+  return unwrapEnvelope<T>(json);
 }
 
 export function apiFetch<T>(path: string, accessToken?: string): Promise<T> {
@@ -155,7 +170,7 @@ async function rawApiPost<T>(path: string, body: unknown, accessToken?: string, 
   }
 
   const json = await res.json();
-  return (json?.data ?? json) as T;
+  return unwrapEnvelope<T>(json);
 }
 
 export function apiPost<T>(path: string, body: unknown, accessToken?: string, traceIdOverride?: string): Promise<T> {
@@ -211,7 +226,7 @@ async function rawApiPostForm<T>(
 
     // Some backends return "user already exists" as a non-2xx status but still include
     // the session token in the body — treat that as a successful login.
-    const data = (json?.data ?? json) as Record<string, unknown>;
+    const data = unwrapEnvelope<Record<string, unknown>>(json);
     if (data?.token) return data as T;
 
     const message = (json?.message as string) ?? `API ${res.status}: ${path}`;
@@ -223,7 +238,7 @@ async function rawApiPostForm<T>(
   }
 
   const json = await res.json();
-  return (json?.data ?? json) as T;
+  return unwrapEnvelope<T>(json);
 }
 
 export function apiPostForm<T>(

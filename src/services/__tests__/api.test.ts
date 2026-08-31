@@ -30,28 +30,42 @@ function mockResponse(ok: boolean, status: number, body: unknown, responseHeader
   } as unknown as Response;
 }
 
-global.fetch = jest.fn(async (_url: RequestInfo | URL, options?: RequestInit) => {
+function mainFetchMock(_url: RequestInfo | URL, options?: RequestInit) {
   fetchCallCount++;
   const headers = options?.headers as Record<string, string> | undefined;
   const auth = headers?.Authorization;
 
   if (auth === 'Bearer expired-token') {
-    return mockResponse(false, 401, { code: 'TOKEN_EXPIRED', message: 'Access token expired.' });
+    return Promise.resolve(mockResponse(false, 401, { code: 'TOKEN_EXPIRED', message: 'Access token expired.' }));
   }
   if (auth === 'Bearer stale-token') {
     // Semi-public route (server/auth/middleware/authenticate.ts): token
     // presented but failed verification — server still returns 200,
     // silently downgraded to anonymous, flagged via this header.
-    return mockResponse(true, 200, { data: { hasAccess: false } }, { 'X-Token-Status': 'invalid' });
+    return Promise.resolve(
+      mockResponse(true, 200, { data: { hasAccess: false } }, { 'X-Token-Status': 'invalid' }),
+    );
   }
   if (auth === 'Bearer fresh-token') {
-    return mockResponse(true, 200, { data: { success: true } });
+    return Promise.resolve(mockResponse(true, 200, { data: { success: true } }));
   }
-  throw new Error(`unexpected Authorization header in test: ${auth}`);
-}) as unknown as typeof fetch;
+  if (auth === 'Bearer null-data-token') {
+    // e.g. GET /api/v1/subscriptions/me with no active subscription — a
+    // legitimate `data: null`, not a missing/absent field.
+    return Promise.resolve(mockResponse(true, 200, { success: true, data: null }));
+  }
+  if (auth === 'Bearer no-envelope-token') {
+    // Some endpoints don't use the { success, data } envelope at all.
+    return Promise.resolve(mockResponse(true, 200, { raw: 'value' }));
+  }
+  return Promise.reject(new Error(`unexpected Authorization header in test: ${auth}`));
+}
+
+global.fetch = jest.fn(mainFetchMock) as unknown as typeof fetch;
 
 describe('api.ts — transparent token refresh', () => {
   beforeEach(() => {
+    global.fetch = jest.fn(mainFetchMock) as unknown as typeof fetch;
     fetchCallCount = 0;
     mockCurrentTokens = { accessToken: 'expired-token', refreshToken: 'refresh-token' };
     mockRefreshTokens.mockClear();
@@ -98,5 +112,30 @@ describe('api.ts — transparent token refresh', () => {
     ) as unknown as typeof fetch;
     await expect(apiFetch('/api/v1/whatever')).rejects.toMatchObject({ code: 'TOKEN_EXPIRED' });
     expect(mockRefreshTokens).not.toHaveBeenCalled();
+  });
+});
+
+describe('api.ts — envelope unwrapping', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn(mainFetchMock) as unknown as typeof fetch;
+    mockCurrentTokens = { accessToken: 'null-data-token', refreshToken: 'refresh-token' };
+  });
+
+  // Regression test: `json?.data ?? json` treated an explicit `data: null`
+  // (a legitimate envelope value, e.g. "no active subscription") the same as
+  // `data` being absent, and returned the whole envelope object instead of
+  // null. That object is truthy, so callers expecting `T | null` (like
+  // syncSubscription) saw a non-null, non-Subscription object instead —
+  // e.g. reading `.status` off it produced `undefined` rather than the
+  // paywall correctly showing "not subscribed".
+  it('returns null (not the envelope) when data is explicitly null', async () => {
+    const result = await apiFetch('/api/v1/subscriptions/me', 'null-data-token');
+    expect(result).toBeNull();
+  });
+
+  it('falls back to the raw response body when there is no data-envelope at all', async () => {
+    mockCurrentTokens = { accessToken: 'no-envelope-token', refreshToken: 'refresh-token' };
+    const result = await apiFetch('/api/v1/whatever', 'no-envelope-token');
+    expect(result).toEqual({ raw: 'value' });
   });
 });
