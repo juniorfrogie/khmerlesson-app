@@ -86,6 +86,22 @@ async function rawApiFetch<T>(path: string, accessToken?: string): Promise<T> {
     headers: baseHeaders(accessToken, traceId),
   });
 
+  // A semi-public route (e.g. main-lessons) can return 200 with a response
+  // that was silently computed as anonymous because our access token failed
+  // verification server-side (server/auth/middleware/authenticate.ts) —
+  // distinct from genuinely having no token. Treat this the same as an
+  // explicit TOKEN_EXPIRED so the existing withTokenRefresh retry below
+  // transparently re-fetches with a fresh token instead of the caller
+  // silently caching a wrong "locked" response.
+  if (res.ok && accessToken && res.headers?.get?.('X-Token-Status') === 'invalid') {
+    logger.warn(traceId, `apiFetch ${path} served anonymously — stale access token`, {});
+    const err = new Error('Access token expired');
+    (err as Error & { code: string }).code = 'TOKEN_EXPIRED';
+    (err as Error & { status: number }).status = res.status;
+    (err as Error & { traceId: string }).traceId = traceId;
+    throw err;
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     logger.warn(traceId, `apiFetch ${res.status} ${path}`, { response: text });

@@ -6,7 +6,7 @@ import 'react-native-reanimated';
 import { Colors } from '@/src/shared/theme';
 import { logger, newTraceId, flushLogs, startLogFlushing } from '@/src/shared/utils/logger';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
-import { flushPendingProgress } from '@/src/features/progress/service';
+import { fetchAndMergeCloudProgress } from '@/src/features/progress/service';
 import { ErrorBoundary } from '@/src/shared/components/ErrorBoundary';
 
 // Registered once at module load (a process-wide hook, not tied to
@@ -50,8 +50,13 @@ export default function RootLayout() {
         // through a transient failure) queue locally — see
         // src/features/progress/service.ts. Foreground return is a
         // reasonable point to assume connectivity may have come back.
+        // Fetch-and-merge cloud state first (same ordering as cold start,
+        // app/index.tsx) before flushing the local queue — otherwise a
+        // locally-queued item could overwrite a newer completion synced
+        // from another device in the meantime, since the queue's own
+        // staleness check only has local knowledge.
         const accessToken = useAuthStore.getState().tokens?.accessToken;
-        if (accessToken) flushPendingProgress(accessToken).catch(() => {});
+        if (accessToken) fetchAndMergeCloudProgress(accessToken).catch(() => {});
       }
     });
     return () => subscription.remove();

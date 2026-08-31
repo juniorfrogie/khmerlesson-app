@@ -20,13 +20,14 @@ jest.mock('@/src/features/auth/store/authStore', () => ({
 
 let fetchCallCount = 0;
 
-function mockResponse(ok: boolean, status: number, body: unknown) {
+function mockResponse(ok: boolean, status: number, body: unknown, responseHeaders?: Record<string, string>) {
   return {
     ok,
     status,
     text: async () => JSON.stringify(body),
     json: async () => body,
-  } as Response;
+    headers: { get: (key: string) => responseHeaders?.[key] ?? null },
+  } as unknown as Response;
 }
 
 global.fetch = jest.fn(async (_url: RequestInfo | URL, options?: RequestInit) => {
@@ -36,6 +37,12 @@ global.fetch = jest.fn(async (_url: RequestInfo | URL, options?: RequestInit) =>
 
   if (auth === 'Bearer expired-token') {
     return mockResponse(false, 401, { code: 'TOKEN_EXPIRED', message: 'Access token expired.' });
+  }
+  if (auth === 'Bearer stale-token') {
+    // Semi-public route (server/auth/middleware/authenticate.ts): token
+    // presented but failed verification — server still returns 200,
+    // silently downgraded to anonymous, flagged via this header.
+    return mockResponse(true, 200, { data: { hasAccess: false } }, { 'X-Token-Status': 'invalid' });
   }
   if (auth === 'Bearer fresh-token') {
     return mockResponse(true, 200, { data: { success: true } });
@@ -76,6 +83,13 @@ describe('api.ts — transparent token refresh', () => {
     await expect(apiFetch('/api/v1/whatever', 'expired-token')).rejects.toMatchObject({
       code: 'TOKEN_EXPIRED',
     });
+  });
+
+  it('treats a 200 response with X-Token-Status: invalid as TOKEN_EXPIRED and retries with a fresh token', async () => {
+    mockCurrentTokens = { accessToken: 'stale-token', refreshToken: 'refresh-token' };
+    const result = await apiFetch('/api/v1/main-lessons', 'stale-token');
+    expect(result).toEqual({ success: true });
+    expect(mockRefreshTokens).toHaveBeenCalledTimes(1);
   });
 
   it('does not attempt a refresh at all when no accessToken was provided', async () => {

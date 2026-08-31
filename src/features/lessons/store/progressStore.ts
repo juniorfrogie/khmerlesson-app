@@ -30,6 +30,12 @@ interface ProgressStore {
 // itself (it's called synchronously from actions, not re-derived per call).
 let activeNamespace = currentIdentityNamespace();
 
+// Guards against two overlapping hydrate() calls (e.g. a rapid double
+// account-switch) interleaving: each call captures its own generation id: if
+// a newer hydrate() has started by the time an older one's async work
+// resolves, the older one no longer commits its (now-stale) result.
+let hydrateGeneration = 0;
+
 export const useProgressStore = create<ProgressStore>((set, get) => ({
   completedLessons: {},
   lastAccessed: null,
@@ -53,10 +59,13 @@ export const useProgressStore = create<ProgressStore>((set, get) => ({
   // empty when nothing is cached for that identity, so a previous user's
   // in-memory data never lingers visible after switching accounts.
   hydrate: async () => {
-    activeNamespace = currentIdentityNamespace();
+    const generation = ++hydrateGeneration;
+    const namespace = currentIdentityNamespace();
+    activeNamespace = namespace;
     try {
-      await migrateLegacyIfNeeded();
-      const raw = await AsyncStorage.getItem(storageKey(activeNamespace));
+      await migrateLegacyIfNeeded(namespace);
+      const raw = await AsyncStorage.getItem(storageKey(namespace));
+      if (generation !== hydrateGeneration) return; // superseded by a newer hydrate()
       if (raw) {
         const parsed = JSON.parse(raw);
         set({
@@ -90,7 +99,7 @@ function persist(state: Pick<ProgressStore, 'completedLessons' | 'lastAccessed'>
 // anything already present for that identity. Runs at most once per
 // device, guarded by LEGACY_MIGRATION_FLAG_KEY, regardless of how many
 // identities hydrate() afterward.
-async function migrateLegacyIfNeeded(): Promise<void> {
+async function migrateLegacyIfNeeded(namespace: string): Promise<void> {
   try {
     const alreadyMigrated = await AsyncStorage.getItem(LEGACY_MIGRATION_FLAG_KEY);
     if (alreadyMigrated) return;
@@ -101,7 +110,7 @@ async function migrateLegacyIfNeeded(): Promise<void> {
         completedLessons?: Record<number, number[]>;
         lastAccessed?: LastAccessed | null;
       };
-      const existingRaw = await AsyncStorage.getItem(storageKey(activeNamespace));
+      const existingRaw = await AsyncStorage.getItem(storageKey(namespace));
       const existing = existingRaw
         ? (JSON.parse(existingRaw) as { completedLessons?: Record<number, number[]>; lastAccessed?: LastAccessed | null })
         : {};
@@ -112,7 +121,7 @@ async function migrateLegacyIfNeeded(): Promise<void> {
         // recent activity) over the legacy value.
         lastAccessed: existing.lastAccessed ?? legacy.lastAccessed ?? null,
       };
-      await AsyncStorage.setItem(storageKey(activeNamespace), JSON.stringify(merged));
+      await AsyncStorage.setItem(storageKey(namespace), JSON.stringify(merged));
       await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
       logger.info(newTraceId(), 'legacy_progress_migrated', {
         store: 'lesson',

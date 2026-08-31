@@ -15,7 +15,7 @@ jest.mock('@/src/services/api', () => ({
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { flushPendingProgress } = require('../service');
+const { flushPendingProgress, syncLessonCompletion } = require('../service');
 
 const PENDING_KEY = 'pending_progress_sync';
 
@@ -75,5 +75,52 @@ describe('flushPendingProgress — stale queued quiz writes are dropped, not rep
 
     const remaining = JSON.parse((await AsyncStorage.getItem(PENDING_KEY)) ?? '[]');
     expect(remaining).toHaveLength(1); // failed send — stays queued for the next flush
+  });
+
+  it('preserves an item queued concurrently while a flush is still in flight (no lost-update race)', async () => {
+    await AsyncStorage.setItem(
+      PENDING_KEY,
+      JSON.stringify([{ type: 'lesson', body: { mainLessonId: 1, lessonId: 10, completedAt: new Date().toISOString() } }]),
+    );
+
+    let releaseFirstSend: () => void = () => {};
+    const firstSendGate = new Promise<void>((resolve) => { releaseFirstSend = resolve; });
+    let signalFirstSendStarted: () => void = () => {};
+    const firstSendStarted = new Promise<void>((resolve) => { signalFirstSendStarted = resolve; });
+    mockApiPost.mockImplementation(async (_path: string, body: { lessonId: number }) => {
+      if (body.lessonId === 10) {
+        // Signals that flush has already read its initial queue snapshot
+        // and reached the network call for the first item (deterministic
+        // proof of where flush currently is, instead of relying on
+        // AsyncStorage mock timing), then blocks until released — giving
+        // the test a guaranteed window to queue a second item before flush
+        // finishes and persists its result.
+        signalFirstSendStarted();
+        await firstSendGate;
+        return {};
+      }
+      if (body.lessonId === 20) {
+        throw new Error('offline');
+      }
+      return {};
+    });
+
+    const flushDone = flushPendingProgress('token');
+    await firstSendStarted;
+
+    // Flush's snapshot is already taken and it's now blocked on the first
+    // item's network call — queue a second, unrelated completion that fails
+    // to sync (e.g. offline) via the normal failure path.
+    await syncLessonCompletion('token', { mainLessonId: 1, lessonId: 20 });
+
+    releaseFirstSend();
+    await flushDone;
+
+    const remaining = JSON.parse((await AsyncStorage.getItem(PENDING_KEY)) ?? '[]');
+    // The first item succeeded and should be gone; the concurrently-queued
+    // second item must survive — flush's final write must not silently
+    // overwrite storage with a stale pre-concurrency snapshot.
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].body.lessonId).toBe(20);
   });
 });

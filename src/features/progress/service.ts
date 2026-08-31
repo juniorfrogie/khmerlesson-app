@@ -52,7 +52,7 @@ type PendingSync =
 
 const PENDING_KEY = 'pending_progress_sync';
 
-async function getPending(): Promise<PendingSync[]> {
+async function getPendingRaw(): Promise<PendingSync[]> {
   try {
     const raw = await AsyncStorage.getItem(PENDING_KEY);
     return raw ? (JSON.parse(raw) as PendingSync[]) : [];
@@ -61,8 +61,29 @@ async function getPending(): Promise<PendingSync[]> {
   }
 }
 
-async function setPending(items: PendingSync[]): Promise<void> {
+async function setPendingRaw(items: PendingSync[]): Promise<void> {
   await AsyncStorage.setItem(PENDING_KEY, JSON.stringify(items)).catch(() => {});
+}
+
+// AsyncStorage has no transactional read-modify-write, so a queue append
+// (syncQuizAttempt/syncLessonCompletion, on failure) racing against
+// flushPendingProgress's own read-modify-write — or two failures racing each
+// other — could otherwise silently lose a queued item (whichever write lands
+// last wins, based on a snapshot the other write didn't know about). Every
+// mutation is chained onto this promise so they run one at a time, each
+// always reading the queue's latest state, not a stale snapshot.
+let pendingQueueChain: Promise<PendingSync[]> = Promise.resolve([]);
+
+function updatePending(fn: (items: PendingSync[]) => PendingSync[]): Promise<PendingSync[]> {
+  pendingQueueChain = pendingQueueChain
+    .catch(() => [] as PendingSync[])
+    .then(async () => {
+      const current = await getPendingRaw();
+      const next = fn(current);
+      await setPendingRaw(next);
+      return next;
+    });
+  return pendingQueueChain;
 }
 
 async function sendPending(accessToken: string, item: PendingSync, traceId: string): Promise<void> {
@@ -79,30 +100,40 @@ async function sendPending(accessToken: string, item: PendingSync, traceId: stri
 // mirroring the re-buffer-on-failure pattern already used by
 // src/shared/utils/logger.ts's flushLogs().
 export async function flushPendingProgress(accessToken: string): Promise<void> {
-  const items = await getPending();
+  const items = await getPendingRaw();
   if (items.length === 0) return;
 
   const traceId = newTraceId();
-  const stillPending: PendingSync[] = [];
+  const resolved: PendingSync[] = []; // sent successfully, or dropped as stale — safe to remove
+  let flushed = 0;
   let dropped = 0;
   for (const item of items) {
     if (item.type === 'quiz' && isStaleQuizItem(item)) {
       dropped += 1;
+      resolved.push(item);
       continue;
     }
     try {
       await sendPending(accessToken, item, traceId);
+      flushed += 1;
+      resolved.push(item);
     } catch {
-      stillPending.push(item);
+      // leave it in the queue — untouched by the removal step below
     }
   }
-  await setPending(stillPending);
-  if (stillPending.length < items.length) {
-    logger.info(traceId, 'pending_progress_flushed', {
-      flushed: items.length - stillPending.length - dropped,
-      dropped,
-      stillPending: stillPending.length,
-    });
+
+  if (resolved.length > 0) {
+    // Remove exactly the items this run resolved from whatever the queue
+    // currently holds (via updatePending) — not from the `items` snapshot
+    // taken above — so anything appended concurrently by syncQuizAttempt/
+    // syncLessonCompletion while this flush was awaiting network calls is
+    // preserved rather than clobbered by a stale overwrite.
+    const resolvedKeys = new Set(resolved.map((i) => JSON.stringify(i)));
+    await updatePending((current) => current.filter((i) => !resolvedKeys.has(JSON.stringify(i))));
+  }
+
+  if (flushed > 0 || dropped > 0) {
+    logger.info(traceId, 'pending_progress_flushed', { flushed, dropped });
   }
 }
 
@@ -115,7 +146,7 @@ export async function syncQuizAttempt(accessToken: string, payload: QuizProgress
     logger.info(traceId, 'quiz_progress_synced', { quizId: payload.quizId });
   } catch (err) {
     logger.warn(traceId, 'quiz_progress_sync_failed', { quizId: payload.quizId, message: (err as Error).message });
-    await getPending().then((items) => setPending([...items, { type: 'quiz', body }]));
+    await updatePending((items) => [...items, { type: 'quiz', body }]);
   }
 }
 
@@ -128,7 +159,7 @@ export async function syncLessonCompletion(accessToken: string, payload: LessonP
     logger.info(traceId, 'lesson_progress_synced', { lessonId: payload.lessonId });
   } catch (err) {
     logger.warn(traceId, 'lesson_progress_sync_failed', { lessonId: payload.lessonId, message: (err as Error).message });
-    await getPending().then((items) => setPending([...items, { type: 'lesson', body }]));
+    await updatePending((items) => [...items, { type: 'lesson', body }]);
   }
 }
 

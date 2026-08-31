@@ -2,13 +2,20 @@
 
 Update this file after every meaningful implementation change. If bugs or any suggestion found, add it to Next Up.
 
+## Two-Phase Release Plan (decided 2026-08-31)
+
+Remaining work is split into two phases so iOS can ship independently of Android:
+
+- **Phase 1 — iOS App Store: code-complete.** The full P0 roadmap (auth/session reliability, subscription sync, cloud quiz/lesson progress) plus P2 (observability, testing) is implemented, migrated against a live database, and integration-tested — see "Database Migration Verification & Live Integration Test" and "Phase 1 Close-Out Fixes" below. What remains before an actual App Store submission is **human-only** action, not code: a real-device/simulator QA pass, running `eas build`/`eas submit` with Apple Developer credentials, replying to Apple's existing Guideline 2.1(b) rejection, and confirming subscription-plan descriptions meet Apple 3.1.2(c) content wording. None of these are repository changes.
+- **Phase 2 — Google Play/Android: deferred, unchanged.** Everything under "P1 — Google Play Launch" (Phase 4.1–4.8) below is untouched and stays exactly as scoped — no code work happens here until Phase 1 ships.
+
 ## Current Phase
 
-- In progress — investigation + planning complete for the next Improvement Roadmap cycle (auth/session reliability, subscription sync, cloud quiz progress, Google Play launch). No implementation has started yet; see "## KhmerLesson Improvement Roadmap" below.
+- Phase 1 (iOS) code-complete, pending the human actions listed above. Phase 2 (Android/Google Play) not started — see "P1 — Google Play Launch" below.
 
 ## Current Goal
 
-- Phase D complete — Subscription UX fixes shipped. Next: work the Improvement Roadmap below, in the dependency order it specifies, starting with Phase 1 (Authentication & Session Persistence).
+- Phase D complete — Subscription UX fixes shipped. P0/P2 roadmap complete and live-verified. Next: human QA/App Store Connect actions for Phase 1 (see above), then Phase 2 (Google Play) whenever that's greenlit.
 
 ## Completed
 
@@ -775,3 +782,21 @@ None of these three require immediate action; none are backward-compatibility or
 * Real iOS/Android device or simulator still required (unchanged) — Keychain/Keystore behavior, background/foreground transitions, real Google/Apple sign-in, the upgrade-path/legacy-migration test against a real previous build, first Android build.
 * Google Cloud Console / Play Console access still required (unchanged).
 * Four low-priority, non-blocking edge cases await a human decision on whether/when to address: the namespacing-race condition (prior session), the `main-lessons` reactive-refresh gap, the offline-queue lost-update race, and the foreground-flush staleness-check gap (all three new, this session).
+
+---
+
+## Phase 1 Close-Out Fixes (2026-08-31)
+
+Closed all four non-blocking edge cases from the section above, plus two small pieces of housekeeping, as part of "fix everything before iOS submission." All are additive/non-destructive and backward-compatible with the currently-released app.
+
+* **`main-lessons` expired-token defense-in-depth gap** — **fixed [MOBILE + BACKEND]**. `khmerlesson-dashboard/server/auth/middleware/authenticate.ts`'s semi-public fallback now sets `req.tokenInvalid = true` when a Bearer token was presented but failed verification (distinct from no token at all, which is unaffected). `server/api.ts`'s `GET /main-lessons` handler sets an `X-Token-Status: invalid` response header when that flag is set — scoped to this one route, not all six semi-public prefixes, since it's the only one that personalizes its response. Chose a header over changing the HTTP status specifically to stay backward-compatible with the currently-released app (no refresh/retry logic, depends on the existing 200-anonymous-fallback behavior). `khmerlesson-app/src/services/api.ts`'s `rawApiFetch` now treats that header (only when an access token was actually sent) as a synthetic `TOKEN_EXPIRED` error, reusing the *existing* `withTokenRefresh` retry machinery unchanged. Live-verified against the migrated dev database: no token → 200, no header; invalid token → 200, `X-Token-Status: invalid`; valid token → 200, no header, correct `hasAccess`. New test: `src/services/__tests__/api.test.ts` ("treats a 200 response with X-Token-Status: invalid as TOKEN_EXPIRED...").
+* **Offline pending-queue lost-update race** — **fixed [MOBILE]**. `src/features/progress/service.ts`'s `getPending`/`setPending` are now private `getPendingRaw`/`setPendingRaw`, with a new `updatePending(fn)` that serializes every queue mutation (both sync functions' append-on-failure, and `flushPendingProgress`'s "remove what was resolved" step) onto a single module-level promise chain, so no two mutations ever read-modify-write from the same stale snapshot. `flushPendingProgress` now removes exactly the items it resolved (succeeded or dropped-as-stale) from whatever the queue currently holds, rather than blindly overwriting storage with a pre-concurrency snapshot. New test: `src/features/progress/__tests__/service.flush.test.ts` ("preserves an item queued concurrently while a flush is still in flight").
+* **Foreground-flush missing cloud-fetch-before-flush** — **fixed [MOBILE]**. `app/_layout.tsx`'s foreground `AppState` handler now calls `fetchAndMergeCloudProgress` (fetch-then-flush) instead of `flushPendingProgress` directly — matches the cold-start ordering in `app/index.tsx` exactly, so the queue's local-only staleness check always has fresh cloud state to compare against, closing the narrow multi-device overwrite window.
+* **Namespacing double-hydrate race** — **fixed [MOBILE]**. Both `progressStore.ts` and `quizScoreStore.ts` gained a generation-counter guard: `hydrate()` captures a local generation id, and only commits its result (`set(...)`) if no newer `hydrate()` call has started by the time its async work resolves. `migrateLegacyIfNeeded()` in both stores now takes the namespace as an explicit parameter instead of reading the shared mutable `activeNamespace` variable, so an overlapping call can't cause it to read/write the wrong identity's key mid-migration.
+* **Housekeeping** — removed the single stray tracked file `khmerlesson-app/ios/Pods/Target Support Files/Pods-KhmerLessons/ExpoModulesProvider.swift` (confirmed: an accidental `pod install`-from-wrong-directory artifact from old pre-cycle commit `b6fce5b`, unrelated to the real gitignored `ios/` native project). Fixed the 5 pre-existing `react/no-unescaped-entities` lint errors in `app/quiz-guide.tsx` — `expo lint` is now fully clean (0 errors, same pre-existing warning baseline).
+
+**Verified**: `npx tsc --noEmit` (both repos) clean. `npm run check` (dashboard) clean. `npx expo lint` — 0 errors (down from 5), same pre-existing warnings. `npx jest` — **7 suites, 29 tests, all passing** (was 27; +2 new tests for the two fixes above with dedicated regression coverage). Backend changes live-tested against the already-migrated dev database (see above) plus a smoke re-check that account isolation, progress persistence, and unrelated protected routes are unaffected by the `authenticate.ts` change.
+
+**Not fixed, flagged separately (unrelated to this cycle)**: `app.json`'s `ios.buildNumber` was found changed locally (`"19"` → `"22"`, plus a stripped trailing newline) at the start of this session, with no corresponding action taken by this session that would explain it (no `eas`/`expo` build process was run, and no command used here touches `buildNumber`). Left untouched and excluded from this session's commit — recommend checking `git diff app.json` and your own recent local tooling/EAS activity before your next iOS build, since an unexpected build-number mismatch with App Store Connect will reject the upload.
+
+**Remaining before Phase 1 (iOS) is actually submittable — human actions only, unchanged from above**: real-device/simulator QA pass, `eas build`/`eas submit` + App Store Connect upload (Apple Developer credentials), replying to Apple's Guideline 2.1(b) rejection, confirming subscription-plan descriptions against Apple 3.1.2(c).

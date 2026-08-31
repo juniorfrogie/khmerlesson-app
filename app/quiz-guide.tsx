@@ -18,7 +18,7 @@ export default function QuizGuideScreen() {
       <SafeAreaView style={styles.safe} edges={['bottom']}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <Text variant="body" color={Colors.text.primary} style={styles.paragraph}>
-            Once you've completed a lesson, you'll be taken directly to that lesson's quiz. Alternatively, you can access all quizzes at the bottom of the app.
+            Once you&apos;ve completed a lesson, you&apos;ll be taken directly to that lesson&apos;s quiz. Alternatively, you can access all quizzes at the bottom of the app.
           </Text>
 
           <Text variant="body" color={Colors.text.primary} style={styles.paragraph}>
@@ -35,7 +35,7 @@ export default function QuizGuideScreen() {
           </View>
 
           <Text variant="body" color={Colors.text.primary} style={styles.paragraph}>
-            Every time you open the app, you'll be taken directly to your most recent lesson.
+            Every time you open the app, you&apos;ll be taken directly to your most recent lesson.
           </Text>
 
           <Text variant="body" color={Colors.text.primary} style={styles.paragraph}>
@@ -43,7 +43,7 @@ export default function QuizGuideScreen() {
           </Text>
 
           <Text variant="body" color={Colors.text.primary} style={styles.paragraph}>
-            If you have any questions, spot any mistakes, or have ideas for improvement, please don't hesitate to contact us.
+            If you have any questions, spot any mistakes, or have ideas for improvement, please don&apos;t hesitate to contact us.
           </Text>
 
           <Text variant="body" color={Colors.text.primary} style={styles.paragraph}>

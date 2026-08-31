@@ -27,6 +27,9 @@ interface QuizScoreStore {
 // namespacing pattern, applied here to quiz scores.
 let activeNamespace = currentIdentityNamespace();
 
+// Same double-hydrate guard as progressStore.ts — see its comment.
+let hydrateGeneration = 0;
+
 export const useQuizScoreStore = create<QuizScoreStore>((set, get) => ({
   scores: {},
 
@@ -48,10 +51,13 @@ export const useQuizScoreStore = create<QuizScoreStore>((set, get) => ({
   getScore: (lessonId) => get().scores[lessonId],
 
   hydrate: async () => {
-    activeNamespace = currentIdentityNamespace();
+    const generation = ++hydrateGeneration;
+    const namespace = currentIdentityNamespace();
+    activeNamespace = namespace;
     try {
-      await migrateLegacyIfNeeded();
-      const raw = await AsyncStorage.getItem(storageKey(activeNamespace));
+      await migrateLegacyIfNeeded(namespace);
+      const raw = await AsyncStorage.getItem(storageKey(namespace));
+      if (generation !== hydrateGeneration) return; // superseded by a newer hydrate()
       set({ scores: raw ? (JSON.parse(raw) as Record<string, ScoreEntry>) : {} });
     } catch {
       // ignore corrupt storage
@@ -79,7 +85,7 @@ function storageKey(namespace: string): string {
 // retakes that quiz, at which point the real sync path picks them up
 // normally. Flagged in context/progress-tracker.md rather than silently
 // left incomplete.
-async function migrateLegacyIfNeeded(): Promise<void> {
+async function migrateLegacyIfNeeded(namespace: string): Promise<void> {
   try {
     const alreadyMigrated = await AsyncStorage.getItem(LEGACY_MIGRATION_FLAG_KEY);
     if (alreadyMigrated) return;
@@ -87,7 +93,7 @@ async function migrateLegacyIfNeeded(): Promise<void> {
     const legacyRaw = await AsyncStorage.getItem(LEGACY_STORAGE_KEY);
     if (legacyRaw) {
       const legacy = JSON.parse(legacyRaw) as Record<string, { score: number; total: number }>;
-      const existingRaw = await AsyncStorage.getItem(storageKey(activeNamespace));
+      const existingRaw = await AsyncStorage.getItem(storageKey(namespace));
       const existing = existingRaw ? (JSON.parse(existingRaw) as Record<string, ScoreEntry>) : {};
 
       const merged: Record<string, ScoreEntry> = { ...existing };
@@ -96,7 +102,7 @@ async function migrateLegacyIfNeeded(): Promise<void> {
         merged[lessonId] = { quizId: -1, score: entry.score, total: entry.total, completedAt: new Date(0).toISOString() };
       }
 
-      await AsyncStorage.setItem(storageKey(activeNamespace), JSON.stringify(merged));
+      await AsyncStorage.setItem(storageKey(namespace), JSON.stringify(merged));
       await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
       logger.info(newTraceId(), 'legacy_progress_migrated', { store: 'quiz', quizCount: Object.keys(legacy).length });
     }
