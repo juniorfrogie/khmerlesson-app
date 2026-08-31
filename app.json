@@ -32,7 +32,7 @@
       }
     },
     "android": {
-      "package": "com.digital606.khmerlesson",
+      "package": "com.digital606.khmerlessons",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
