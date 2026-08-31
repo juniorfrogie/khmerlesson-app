@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { currentIdentityNamespace, subscribeToIdentityChange } from '@/src/shared/utils/identityNamespace';
+import { logger, newTraceId } from '@/src/shared/utils/logger';
 
 const STORAGE_KEY_PREFIX = 'quiz_scores';
 // Pre-namespacing installs stored everything under this exact literal key
@@ -97,10 +98,12 @@ async function migrateLegacyIfNeeded(): Promise<void> {
 
       await AsyncStorage.setItem(storageKey(activeNamespace), JSON.stringify(merged));
       await AsyncStorage.removeItem(LEGACY_STORAGE_KEY);
+      logger.info(newTraceId(), 'legacy_progress_migrated', { store: 'quiz', quizCount: Object.keys(legacy).length });
     }
 
     await AsyncStorage.setItem(LEGACY_MIGRATION_FLAG_KEY, 'true');
-  } catch {
+  } catch (err) {
+    logger.warn(newTraceId(), 'legacy_progress_migration_failed', { store: 'quiz', message: (err as Error).message });
     // Best-effort — a migration failure must not block hydrate() from
     // loading whatever namespaced data already exists.
   }

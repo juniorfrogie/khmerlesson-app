@@ -4,9 +4,40 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { Colors } from '@/src/shared/theme';
-import { startLogFlushing } from '@/src/shared/utils/logger';
+import { logger, newTraceId, flushLogs, startLogFlushing } from '@/src/shared/utils/logger';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { flushPendingProgress } from '@/src/features/progress/service';
+import { ErrorBoundary } from '@/src/shared/components/ErrorBoundary';
+
+// Registered once at module load (a process-wide hook, not tied to
+// RootLayout's mount lifecycle) — decided against adding a dedicated crash
+// SDK this cycle (see context/progress-tracker.md's Observability section),
+// so this reuses the existing debug_logs pipeline instead. Catches what the
+// ErrorBoundary below can't: errors in event handlers, async code, timers —
+// the actual "hard crash" case the pipeline was previously blind to (it
+// only flushed on a 15s interval, which a crash can pre-empt). Chains to
+// the previous handler so default RN behavior (dev red screen, prod crash)
+// is preserved — this only adds logging in front of it, never suppresses it.
+type GlobalErrorHandler = (error: Error, isFatal?: boolean) => void;
+const globalWithErrorUtils = global as typeof global & {
+  ErrorUtils?: {
+    getGlobalHandler: () => GlobalErrorHandler;
+    setGlobalHandler: (handler: GlobalErrorHandler) => void;
+  };
+};
+if (globalWithErrorUtils.ErrorUtils) {
+  const previousHandler = globalWithErrorUtils.ErrorUtils.getGlobalHandler();
+  globalWithErrorUtils.ErrorUtils.setGlobalHandler((error, isFatal) => {
+    const traceId = newTraceId();
+    logger.error(traceId, 'uncaught_exception', {
+      message: error.message,
+      stack: error.stack,
+      isFatal: !!isFatal,
+    });
+    flushLogs();
+    previousHandler?.(error, isFatal);
+  });
+}
 
 export default function RootLayout() {
   useEffect(() => {
@@ -28,25 +59,27 @@ export default function RootLayout() {
 
   return (
     <>
-      <Stack
-        screenOptions={{
-          headerStyle: { backgroundColor: Colors.background },
-          headerTintColor: Colors.primary,
-          headerShadowVisible: false,
-          contentStyle: { backgroundColor: Colors.surface },
-        }}
-      >
-        <Stack.Screen name="index" options={{ headerShown: false }} />
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="onboarding" options={{ headerShown: false }} />
-        <Stack.Screen name="auth/login" options={{ headerShown: false }} />
-        <Stack.Screen name="course/[id]" />
-        <Stack.Screen name="subscription/index" options={{ presentation: 'modal', title: 'Subscribe' }} />
-        <Stack.Screen name="lesson/[id]" />
-        <Stack.Screen name="quiz/[id]" options={{ headerShown: false }} />
-        <Stack.Screen name="welcome" />
-        <Stack.Screen name="quiz-guide" />
-      </Stack>
+      <ErrorBoundary>
+        <Stack
+          screenOptions={{
+            headerStyle: { backgroundColor: Colors.background },
+            headerTintColor: Colors.primary,
+            headerShadowVisible: false,
+            contentStyle: { backgroundColor: Colors.surface },
+          }}
+        >
+          <Stack.Screen name="index" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="onboarding" options={{ headerShown: false }} />
+          <Stack.Screen name="auth/login" options={{ headerShown: false }} />
+          <Stack.Screen name="course/[id]" />
+          <Stack.Screen name="subscription/index" options={{ presentation: 'modal', title: 'Subscribe' }} />
+          <Stack.Screen name="lesson/[id]" />
+          <Stack.Screen name="quiz/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="welcome" />
+          <Stack.Screen name="quiz-guide" />
+        </Stack>
+      </ErrorBoundary>
       <StatusBar style="dark" />
     </>
   );

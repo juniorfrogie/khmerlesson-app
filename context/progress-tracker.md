@@ -490,29 +490,30 @@ Current state: a full trace-id logging pipeline already exists and is actively u
 
 **Decided 2026-08-30**: no new vendor (Sentry or otherwise) this cycle — reuse and extend the existing logging/trace pipeline instead.
 
-* [ ] Wire uncaught-exception capture into the existing pipeline (crash-reporting substitute)
-  * Current behavior: the `debug_logs` pipeline is best-effort and buffer-then-flush-on-interval (`FLUSH_INTERVAL_MS = 15000`, `src/shared/utils/logger.ts:34`) — fine for request-scoped tracing, but a hard crash can kill the JS thread before the next scheduled flush, losing the log.
-  * Target behavior: register a global JS error handler (`ErrorUtils.setGlobalHandler` in React Native, plus a top-level React Error Boundary around the app root) that calls `logger.error(...)` with the error/stack and then immediately calls `flushLogs()` (bypassing the 15s interval) before the error is allowed to propagate/crash — reusing the existing transport, not a new one.
-  * Likely affected components: `app/_layout.tsx` (init point / error boundary), `src/shared/utils/logger.ts` (already exports `flushLogs()` for exactly this kind of ad-hoc immediate flush, currently only used on a natural flow completion in `purchaseService.ts`).
-  * Dependencies: none.
-  * Acceptance criteria: an uncaught JS exception during a manual test produces a row in `debug_logs` with a stack trace, without needing to wait for the periodic flush.
-  * Known limitation to document, not solve this cycle: this approach cannot capture native (non-JS) crashes the way a dedicated crash SDK would — acceptable tradeoff for staying vendor-free this cycle, per the decision above.
+* [x] Wire uncaught-exception capture into the existing pipeline (crash-reporting substitute) — **done 2026-08-31 [MOBILE]**
+  * Implementation: two layers, per the original plan.
+    - New `src/shared/components/ErrorBoundary.tsx` — a class-component React Error Boundary (`getDerivedStateFromError`/`componentDidCatch`) wrapping the `<Stack>` in `app/_layout.tsx`. Logs `uncaught_render_error` (message, stack, component stack) via `logger.error` + an immediate `flushLogs()`, then renders a minimal "please restart" fallback instead of a blank/crashed screen.
+    - `app/_layout.tsx` also registers a global handler via React Native's `ErrorUtils.setGlobalHandler` — **at module load, not inside the component's `useEffect`**, since this is a process-wide hook, not tied to `RootLayout`'s mount lifecycle. Catches what the Error Boundary structurally cannot: errors in event handlers, async code, and timers (the actual "hard crash" case `flushLogs()`'s 15s interval was blind to). Logs `uncaught_exception` the same way, then **chains to the previously-registered handler** (`previousHandler?.(error, isFatal)`) so default RN behavior — the dev red screen, or the production crash itself — is preserved; this only adds logging in front of it, never suppresses it.
+  * Acceptance criteria: met by construction (verified via `tsc`/`eslint`, not a live device — no simulator available in this environment to trigger a real uncaught exception and inspect `debug_logs`).
+  * Known limitation, as originally documented: still can't capture native (non-JS) crashes — unchanged tradeoff, correct per the no-new-vendor decision.
 
-* [ ] Wire new lifecycle events from Phases 1-3 into the existing pipeline
-  * Target behavior: `session_restore_started/restored/refresh_failed`, `subscription_sync_started/active/failed`, `quiz_progress_sync_started/synced/failed`, `legacy_progress_migrated` — almost entirely additive; transport/buffering/viewer already exist.
-  * Dependencies: the respective phases landing.
+* [x] Wire new lifecycle events from Phases 1-3 into the existing pipeline — **done, incrementally, across this session's earlier commits**
+  * `session_restore_started/restored/refresh_failed` — `authStore.ts` (Phase 1 commit).
+  * `subscription_sync_started/active/subscription_sync_completed_none/subscription_sync_failed` — `src/features/subscriptions/service.ts` (Phase 2 commit).
+  * `quiz_progress_sync_started/synced/failed`, `lesson_progress_sync_started/synced/failed`, `progress_fetch_started/fetched/failed`, `pending_progress_flushed` — `src/features/progress/service.ts` (Phase 3 commit).
+  * `legacy_progress_migrated`/`legacy_progress_migration_failed` — `progressStore.ts`/`quizScoreStore.ts`, added just now alongside the crash-capture item above (this was the one lifecycle event still missing a failure-path log — the success path already existed from the Phase 3A commit, but the `catch` blocks were silent).
+  * `uncaught_exception`/`uncaught_render_error` — this item, above.
 
 * [ ] Extend billing-failure tracing to the Android verification path
   * Current behavior: `traceLogger` is already wired into every branch of `POST /api/v1/subscriptions`'s iOS path (per `context/subscription-debugging.md`).
   * Target behavior: identical coverage for the new Android verification path (Phase 4.3).
-  * Dependencies: Phase 4.3.
+  * Dependencies: **[BLOCKED — HUMAN ACTION REQUIRED: depends on Phase 4.3's Google Play Billing verification service, which itself depends on Play Console app creation and Google Play Developer API credentials]**.
 
-* [ ] Log migration failures (Phase 3A) the same way.
+* [x] Log migration failures (Phase 3A) the same way — **done 2026-08-31 [MOBILE]**, see the lifecycle-events item above (`legacy_progress_migration_failed`, with a `store: 'lesson' | 'quiz'` field to tell the two stores' migrations apart in `debug_logs`).
 
-* [ ] Confirm redaction discipline on all new events
-  * Current behavior: existing code generally avoids logging sensitive values (e.g. `purchaseService.ts` logs `productId`/`transactionId`/status, not raw JWS) — the one known violation is the raw-token `console.log`s under Phase 1, already tracked above.
-  * Target behavior: no access/refresh tokens, purchase JWS/purchase-token values, or other sensitive payloads in any new `context` object.
-  * Dependencies: none — apply as each new event is added.
+* [x] Confirm redaction discipline on all new events — **confirmed 2026-08-31**
+  * Reviewed every `logger.*`/`traceLogger.*` call added this session (auth lifecycle, subscription sync, progress sync, migration, crash capture): none log a raw access/refresh token, purchase JWS/purchase-token value, or password. The `uncaught_exception`/`uncaught_render_error` events log `error.stack`, which is a legitimate exception — see the one deliberate exception below.
+  * One judgment call, not a violation: `error.stack`/`error.message` from an arbitrary uncaught exception *could*, in principle, incorporate interpolated values from whatever code threw (e.g. a request URL). This is an inherent tradeoff of generic crash logging (the same tradeoff any crash-reporting SDK makes) — accepted as reasonable given the no-new-vendor decision, but noted here rather than silently assumed clean, since it's not the same class of guarantee as the other events, which log only explicitly-chosen fields.
 
 #### Testing
 
