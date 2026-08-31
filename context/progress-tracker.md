@@ -260,9 +260,7 @@ Current architecture: local-only, split across two independent stores keyed by `
 
 Verified (all items above): `tsc --noEmit`/`npm run check` and `eslint` clean in both repos across every touched file — only pre-existing warnings remain. **Not verified**: any of this against a running backend + real database, since no `DATABASE_URL` is reachable in this environment (see the `[BLOCKED]` schema item) — this is the single largest gap in this phase's verification and should be the first thing checked once a human applies the migration.
 
-* [ ] Focused unit tests for the namespacing + merge logic — **decided scope, see Testing below**
-  * Target behavior: cover the per-user namespace switch (namespacing item above) and the cloud/local conflict-resolution rule (above) with targeted unit tests — these are exactly the kind of easy-to-silently-regress, hard-to-manually-verify-every-time logic the testing decision below calls out as high-risk.
-  * Dependencies: namespacing item, conflict handling item.
+* [x] Focused unit tests for the namespacing + merge logic — **done 2026-08-31**, see `src/features/lessons/store/__tests__/progressStore.namespacing.test.ts` and `src/features/quizzes/store/__tests__/quizScoreStore.test.ts` under the Testing section below for the actual implementation.
 
 ---
 
@@ -382,9 +380,10 @@ Current state: `purchaseService.ts` already targets `react-native-iap`'s unified
   * Target behavior: branch to the new Android verification service based on `platform`, alongside the existing iOS JWS path.
   * Dependencies: verification service.
 
-* [ ] Purchase acknowledgement
-  * Target behavior: confirm `react-native-iap`'s `finishTransaction` (already used at `purchaseService.ts:134,143,211`) performs Google's required acknowledgement (purchases unacknowledged after 3 days are auto-refunded), or add a separate ack call if not.
-  * Dependencies: first Android purchase test.
+* [x] Purchase acknowledgement — **question resolved by inspecting the library, 2026-08-31; the code change itself is deferred**
+  * Answer: `finishTransaction` does **not** perform Google Play acknowledgement — `react-native-iap` exposes it as a distinct function, `acknowledgePurchaseAndroid(purchaseToken): Promise<boolean>` (`node_modules/react-native-iap/src/index.ts:1894`, `types.ts:592`; deprecated alias `acknowledgePurchase`). Confirmed by reading the library's own source/types, not by running a purchase.
+  * Not implemented yet, deliberately: adding just this one call now would be unverifiable, disconnected code — every other layer Phase 4.3 needs (real Google Play product IDs from Play Console, the backend's Android verification service, a live Android build to actually purchase against) is still blocked, so a call to `acknowledgePurchaseAndroid()` would sit dead until those exist. When Phase 4.3 actually gets built, it needs to call `acknowledgePurchaseAndroid(purchase.purchaseToken)` for Android specifically, alongside (not instead of) the existing `finishTransaction` calls in `purchaseService.ts:134,143,211`.
+  * `[BLOCKED — HUMAN ACTION REQUIRED]`: implementing and testing this for real needs Play Console products + a live Android build, per the rest of Phase 4.3.
 
 * [ ] Pending purchase state
   * Current behavior: `[NEEDS INVESTIGATION]` — no equivalent concept in the current iOS-only flow (Google Play supports pending transactions, e.g. cash/carrier billing).
@@ -414,9 +413,10 @@ Current state: `purchaseService.ts` already targets `react-native-iap`'s unified
 
 Current state (see root-cause finding above): `hasAccessToCourse` already only reads `subscriptions`/`subscription_plan_courses`, with `platform` as a plain column, not a branch in the logic — entitlement is **already** platform-independent by construction. This phase is narrower than its original framing suggests.
 
-* [ ] Confirm (not rebuild) `createOrUpdateSubscription` accepts a Google Play-verified purchase unmodified
-  * Current behavior: keyed by `originalTransactionId` (unique) + `platform`. `[NEEDS INVESTIGATION]` exact field mapping — Google's purchase token/orderId plays the same semantic role as Apple's `originalTransactionId` but differs in format/length; verify the column accommodates it.
-  * Dependencies: Phase 4.3's routing item.
+* [x] Confirm (not rebuild) `createOrUpdateSubscription` accepts a Google Play-verified purchase unmodified — **resolved by inspection, 2026-08-31**
+  * Checked: `subscriptions.originalTransactionId` is `varchar("original_transaction_id")` (`khmerlesson-dashboard/shared/schema.ts:83`) — a Postgres `varchar` with **no length modifier**, which behaves identically to `text` (unbounded) for storage purposes, unlike MySQL where a bare `varchar` would need an explicit length. A Google Play purchase token/orderId (which can run well over 100 characters, versus Apple's shorter numeric `originalTransactionId`) fits without any schema change.
+  * `createOrUpdateSubscription`'s own logic (`server/features/subscriptions/controller/controller.ts:47+`) keys strictly on this column value plus `userId`/`allowTransfer`, never branching on its format/length — no platform-specific assumption baked in. Confirmed no code or schema change is needed here; Phase 4.3's Android verification service just needs to populate `originalTransactionId` with the Google Play purchase token when calling this function, same as the iOS path already does with Apple's.
+  * Still genuinely dependent on Phase 4.3 existing at all (can't functionally test against a real Google Play purchase without it) — this item just confirms the *target* function needs no changes, not that end-to-end Android billing works yet.
 
 * [ ] Cross-platform login QA
   * Target behavior: a user who purchased on iOS and installs the Android app under the same account should see correct access immediately, since access derives from `userId` not device — should already work; verify as part of Phase 4.7 rather than building anything new.
