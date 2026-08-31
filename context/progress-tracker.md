@@ -358,9 +358,9 @@ Current state: Google Sign-In (`app/auth/login.tsx:7,46-52`) uses `expo-auth-ses
   * Target behavior: pass the new Android OAuth client ID into `Google.useAuthRequest(...)` at `app/auth/login.tsx:46-52`.
   * Dependencies: item above.
 
-* [ ] Document Android env vars
-  * Target behavior: add the Android-specific client ID vars to `.env.example` and to `eas.json`'s Android build profiles, alongside the existing iOS ones (currently also missing from `.env.example`).
-  * Dependencies: none.
+* [x] Document the existing (iOS) Google Sign-In env vars — **done 2026-08-31 [MOBILE]**, Android var still blocked
+  * Implementation: `.env.example` now documents `EXPO_PUBLIC_WEB_CLIENT_ID`, `EXPO_PUBLIC_IOS_CLIENT_ID`, `EXPO_PUBLIC_REVERSED_IOS_CLIENT_ID` — all three were already read by `app/auth/login.tsx` but undocumented.
+  * `[BLOCKED — HUMAN ACTION REQUIRED]` for the Android-specific var: can't document (or add to `eas.json`'s Android build profile) an `EXPO_PUBLIC_ANDROID_CLIENT_ID` that doesn't exist yet — creating it requires the Google Cloud Console Android OAuth client registration above, which is itself blocked on that same external action. Documenting a placeholder for a var the code doesn't read yet would be actively misleading, not merely incomplete.
 
 * [ ] Re-verify session persistence/logout on Android specifically
   * Current behavior: the AsyncStorage/SecureStore-backed store code is already cross-platform, but device-level behavior is unverified.
