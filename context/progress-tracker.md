@@ -609,3 +609,58 @@ Resolved by re-inspection (2026-08-31), not by a code change:
 - All new screens are under `app/course/[id].tsx` and `app/lesson/[id].tsx`
 - `@/src/...` imports work via the existing `@/*` path alias in tsconfig.json
 - `react-native-iap` on StoreKit 2 (iOS) returns `purchase.transactionReceipt` as a JWS string — used directly as the `jws` field for `POST /api/v1/subscriptions`
+
+---
+
+## Autonomous Run Summary (2026-08-31)
+
+Ran the Improvement Roadmap above autonomously across both repositories (`khmerlesson-app` and `khmerlesson-dashboard`, both on branch `feature/khmerlesson-improvements`), implementing every repository-implementable TODO in dependency order, self-reviewing and verifying each with `tsc`/`npm run check` + `eslint` (and, once added, `jest`) before committing, and updating this tracker as the work landed.
+
+### What shipped
+
+**Phase 1 — Authentication & Session Persistence** (fully implemented, `khmerlesson-app`): transparent token-refresh interceptor with request dedup (`src/services/api.ts`), proactive expiry check + refresh at cold start and on app-foreground (`authStore.ts`, `app/_layout.tsx`), auth tokens moved from plain AsyncStorage to `expo-secure-store` with an automatic legacy-data migration for existing installs, raw token values removed from console logs, and the full session lifecycle wired into the existing `debug_logs` trace pipeline.
+
+**Phase 2 — Subscription Restoration & Sync** (fully implemented, `khmerlesson-app`): subscription sync extracted into a reusable `syncSubscription()`, triggered automatically on session restoration (not only on login or a Plan-screen visit), an explicit `SubscriptionSyncStatus` field added so "still syncing" can never be misread as "confirmed no subscription" (and the one place that bug actually existed — the paywall's trial-eligibility check — was fixed), a user-facing Restore Purchases button, and sync failures wired into the status instead of discarded.
+
+**Phase 3 — Cloud Quiz Progress + Lesson Completion** (fully implemented, `[MOBILE + BACKEND]`): new `quiz_attempts`/`lesson_completions` tables and three new `/api/v1` endpoints (`khmerlesson-dashboard`), consumed by new client-side sync services (`khmerlesson-app`) with an offline pending-write queue and a recency-based local/cloud conflict rule. Scope was narrowed per your decision to final-state-only (no resumable attempts) and expanded per your decision to cover lesson completion, not just quizzes.
+
+**Phase 3A — Legacy Progress Migration** (fully implemented, `khmerlesson-app`): one-time migration of pre-namespacing local data into the new per-user namespaced storage, with one honestly-documented gap (migrated quiz scores aren't proactively re-uploaded to the cloud — see the item's own note).
+
+**Account-boundary bug** (fully implemented, `khmerlesson-app`): local lesson/quiz progress is now namespaced per signed-in identity rather than a single global key, per your explicit instruction to namespace rather than clear-on-logout.
+
+**Account deletion bug, found during cross-repo inspection** (fully implemented, `[MOBILE + BACKEND]`): the mobile "Delete Account" button was calling an admin-only backend route that silently rejected every real user. Added a proper self-service `DELETE /api/v1/me` and repointed the client at it.
+
+**Phase 5 — Observability** (fully implemented for everything not blocked on Android, `khmerlesson-app`): a global JS error handler + React Error Boundary now capture uncaught exceptions through the existing `debug_logs` pipeline instead of a paid vendor (per your decision), every lifecycle event planned across Phases 1-3 is wired in, and migration failures are now logged instead of silently swallowed.
+
+**Testing** (fully implemented per your decided scope, `khmerlesson-app`): a minimal `jest-expo` harness and four focused unit-test suites (18 tests) covering exactly the high-risk logic you specified — token-refresh/dedup, subscription status derivation, progress namespacing/identity-switch rehydration, and local/cloud conflict resolution. No component/E2E/framework buildout.
+
+**Android package ID**: set (`com.digital606.khmerlesson`), with a full audit confirming no conflicting references existed anywhere in either repo.
+
+**Miscellaneous**: documented the previously-undocumented Google Sign-In env vars in `.env.example`; resolved three Phase 4 `[NEEDS INVESTIGATION]` items by code/library inspection alone (no schema change needed for a Google Play purchase token; `react-native-iap` needs a separate `acknowledgePurchaseAndroid()` call, not just `finishTransaction`); corrected an inaccurate earlier tracker claim about in-app subscription disclosures after re-reading the actual current code against Apple's rejection checklist.
+
+### Commit trail
+
+`khmerlesson-app`: 14 commits (`f4621e9`..`1a062e0`) — one per logical unit, each preceded by a `tsc`/`eslint`/`jest` pass.
+`khmerlesson-dashboard`: 3 commits (`aef1c3e`, `c7ae914`, plus the account-deletion route) — each preceded by a `tsc` (`npm run check`) pass.
+
+Nothing was pushed to any remote — all commits are local to each repo's `feature/khmerlesson-improvements` branch, per standing instructions not to push without being asked.
+
+### What's genuinely blocked, not merely unaddressed
+
+Every remaining unchecked item in this tracker falls into one of these buckets — verified individually, not assumed:
+
+1. **Requires a real Android device/emulator/build** — icon/splash rendering, back-button behavior, `predictiveBackGestureEnabled` investigation, audio playback, `react-native-iap`'s Android config, the first Android build itself, and everything downstream of it (production network config verification, session-persistence re-verification on Android).
+2. **Requires Google Cloud Console / Play Console access this environment doesn't have** — Android OAuth client + SHA-1 registration, Play Console app creation, Play App Signing, keystore/upload-key setup, internal/closed testing tracks, Google Play Billing product creation, license testers, and the entire store-listing/compliance checklist (Data Safety form, content rating, target audience, ads declaration).
+3. **Requires a business/content decision only a human can make** — store listing copy, target audience, Khmer localization of the listing, whether resumable quiz attempts matter enough later to justify closing the one documented migration gap.
+4. **Requires human institutional knowledge** — whether an informal iOS rollback process already exists, how iOS submission is actually configured today (CLI flags vs. `eas.json`).
+5. **Requires the database migration to actually be applied** — no `DATABASE_URL` was reachable in this environment at any point, so `migrations/0004_cloud_progress.sql` (hand-authored, matching this repo's existing style for prior migrations) has not been run against any database. This is the single biggest gap in this session's verification: the entire Phase 3 backend was type-checked but never exercised against a live database.
+6. **Downstream of the above** — the remaining Phase 4.3 Google Play Billing edge cases (pending purchases, cancelled/expired/renewal handling, restoration, error handling, interrupted-purchase polling, billing-failure tracing) all genuinely need Phase 4.3's foundation (Play Console products + a live Android build) to exist before they can be built or tested for real, not just designed on paper.
+
+### Recommended next actions for a human
+
+1. Apply `migrations/0004_cloud_progress.sql` to a dev database (`npm run db:migrate` in `khmerlesson-dashboard`, or review-then-apply the SQL directly), then confirm the three new `/api/v1` progress endpoints actually work against it.
+2. Run the manual QA checklists flagged `[BLOCKED — HUMAN ACTION REQUIRED]` in this tracker on a real device/simulator (auth session restore/refresh, the upgrade-path/legacy-migration test).
+3. Register the Android package name in Google Cloud Console + Play Console to unblock the rest of Phase 4.
+4. Decide the open business/content items (store listing copy, target audience, Khmer localization) whenever Play Console work starts.
+
+The repository is left in a working state on both sides: all commits are clean, self-contained, and pass their respective type-checkers/linters/tests; nothing was pushed or deployed.
