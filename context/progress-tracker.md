@@ -591,7 +591,7 @@ Explicitly out of scope for this cycle, per the original decision: component tes
 
 All six items below were open as of 2026-08-30 and resolved the same day:
 
-- ~~**Android application ID**~~ — **resolved**: `com.digital606.khmerlesson`, set in `app.json`. See the checked-off item under Phase 4.1 above for the full audit of what was/wasn't changed.
+- ~~**Android application ID**~~ — **resolved 2026-08-30, corrected 2026-08-31**: `com.digital606.khmerlessons` (with `s` — differs from iOS), set in `app.json`. Originally set to `com.digital606.khmerlesson` (matching iOS) but that string was already taken on the Play Store; see "Confirmed Platform Identifiers" below for the final, locked-in mapping. See the checked-off item under Phase 4.1 above for the full audit of what was/wasn't changed.
 - ~~**Quiz Phase 3 scope**~~ — **resolved**: final score + completion state only. No resumable/per-question attempts unless the current UX already supported it (it doesn't) — see the "Scope decided" note at the top of the Account-Scoped Progress Cloud Sync section above.
 - ~~**Lesson-completion progress**~~ — **resolved**: yes, included in the same account-scoped cloud progress architecture as quiz scores — see the same section above (now covers both `quiz_attempts` and `lesson_completions`).
 - ~~**Account-boundary bug fix approach**~~ — **resolved**: per-user namespaced local storage, not clear-on-logout — see the "Namespace local progress storage by user" item above.
@@ -611,6 +611,15 @@ Resolved by re-inspection (2026-08-31), not by a code change:
 - Mock data lives in `context/mock-data/` until API/SQLite layer is ready
 - SQLite offline caching deferred until API-only layer is proven (see earlier recommendation — premium offline adds complexity around entitlement caching)
 - Subscription entitlement (`hasAccessToCourse`, `server/features/subscriptions/controller/controller.ts`) is already platform-independent by construction — `platform` is a data column, not branching logic — so the Google Play launch's "unified entitlement" work (Phase 4.4) is scoped as verification, not a new abstraction layer
+
+### Confirmed Platform Identifiers (2026-08-31) — final for this implementation cycle
+
+- **iOS bundle identifier**: `com.digital606.khmerlesson` — already live on the App Store. Never change it.
+- **Android application/package ID**: `com.digital606.khmerlessons` (with an `s`) — intentionally different because `com.digital606.khmerlesson` is not available for the Android application on the Play Store.
+- Do not reconcile these into matching strings in either direction — this is a deliberate, permanent mapping, not a bug.
+- `com.digital606.khmerlessons` is the single value to use consistently for: Expo `android.package` (already set, `app.json:35`), the Android `applicationId`, the generated Android native project (none exists yet — fully managed Expo workflow), the Google Play Console application, Android OAuth client configuration, Google Sign-In package configuration, Google Play Developer API verification, Play Billing purchase verification, Android App Links/deep links where package identity matters, release signing configuration references, and Google Play testing/release configuration.
+- When Phase 4.3's Google Play verification service is built, it must **not** assume the Apple bundle ID and Android package name are identical: Apple-side verification (JWS `bundleId` field) checks against `com.digital606.khmerlesson`; Google Play-side verification checks against `com.digital606.khmerlessons`.
+- Repo-wide audit (2026-08-31) for any Android-context reference still using the wrong (`khmerlesson`, no `s`) value: only two stale mentions found, both in this file's own historical log (the "Android application ID" resolved-item under "Improvement Roadmap — decisions needed" and the "Android package ID" line under "Autonomous Run Summary") — both corrected in place to point here. The one other repo-wide occurrence, `context/feature-specs/03-purchase-logic.md:154`, is a real Apple StoreKit 2 JWS example payload (`bundleId` field) — correctly iOS-scoped, left unchanged. No source file (`app.json`, code, config) had the wrong value.
 
 ## Session Notes
 
@@ -642,7 +651,7 @@ Ran the Improvement Roadmap above autonomously across both repositories (`khmerl
 
 **Testing** (fully implemented per your decided scope, `khmerlesson-app`): a minimal `jest-expo` harness and four focused unit-test suites (18 tests) covering exactly the high-risk logic you specified — token-refresh/dedup, subscription status derivation, progress namespacing/identity-switch rehydration, and local/cloud conflict resolution. No component/E2E/framework buildout.
 
-**Android package ID**: set (`com.digital606.khmerlesson`), with a full audit confirming no conflicting references existed anywhere in either repo.
+**Android package ID**: set (`com.digital606.khmerlesson` at the time), with a full audit confirming no conflicting references existed anywhere in either repo. **Superseded 2026-08-31**: that value was taken on the Play Store; corrected to `com.digital606.khmerlessons`. See "Confirmed Platform Identifiers" below.
 
 **Miscellaneous**: documented the previously-undocumented Google Sign-In env vars in `.env.example`; resolved three Phase 4 `[NEEDS INVESTIGATION]` items by code/library inspection alone (no schema change needed for a Google Play purchase token; `react-native-iap` needs a separate `acknowledgePurchaseAndroid()` call, not just `finishTransaction`); corrected an inaccurate earlier tracker claim about in-app subscription disclosures after re-reading the actual current code against Apple's rejection checklist.
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-KhmerLesson mobile app — Expo React Native, Khmer language learning. A companion Next.js admin dashboard lives at `../khmerlesson-dashboard`.
+KhmerLesson mobile app — Expo React Native, Khmer language learning. A companion Express + Vite/React admin dashboard (the backend API) lives at `../khmerlesson-dashboard`.
 
 ## Development Commands
 
@@ -16,6 +16,8 @@ npx expo start --ios     # iOS simulator
 npx expo start --android # Android emulator
 npx expo lint            # ESLint
 npx tsc --noEmit         # Type-check without building
+npx jest                 # Run unit tests (jest-expo preset)
+npx jest path/to.test.ts # Run a single test file
 ```
 
 After completing any unit: confirm `npx tsc --noEmit` passes and update `context/progress-tracker.md`.
@@ -92,6 +94,10 @@ context/                      # Living project spec — read before implementing
 
 **Import alias:** `@/` resolves to the repo root, so `@/src/...` imports work everywhere.
 
+## App Identifiers
+
+`app.json`'s iOS `bundleIdentifier` (`com.digital606.khmerlesson`) and Android `package` (`com.digital606.khmerlessons`) are **deliberately different** — not a bug to reconcile. iOS bundle IDs only need to be unique within your own Apple Developer account; Android package names are unique across *every* Play Store developer, and `com.digital606.khmerlesson` (no `s`) was already taken by someone else when Android support was added. The iOS value is already live on the App Store and must never change; the Android value is pluralized as the minimal deviation from it. Do not "fix" this into matching strings.
+
 ## Environment
 
 Copy `.env.example` → `.env` (gitignored):
@@ -157,6 +163,21 @@ else           → lock icon + "Subscribe" → navigate to /subscription
 `src/features/courses/service/purchaseService.ts` wraps `react-native-iap`. The IAP module is loaded via deferred `require()` so the file loads safely in Expo Go (NitroModules only work in native builds). Calls in Expo Go throw `IAP_NOT_AVAILABLE` — the subscription screen handles this with a friendly message.
 
 Purchase flow: `connectIAP` → `loadSubscriptionProduct(productIdIos)` → `purchaseSubscription(planProductId, token)` → `POST /api/v1/subscriptions` with `{ jws: transactionReceipt }` → writes result to `subscriptionStore` → `finishTransaction`.
+
+## Progress Sync & Per-Identity Storage
+
+Local progress storage is namespaced per identity to prevent one account's data leaking into another on a shared device:
+
+- **`src/shared/utils/identityNamespace.ts`** — `currentIdentityNamespace()` returns the signed-in user's id, or `'guest'`. `subscribeToIdentityChange(cb)` fires `cb` whenever that namespace changes (login/logout/account switch), keyed off `useAuthStore`.
+- **`src/features/lessons/store/progressStore.ts`** (`lesson_progress:<namespace>`) and **`src/features/quizzes/store/quizScoreStore.ts`** (`quiz_scores:<namespace>`) both persist under a namespaced AsyncStorage key, re-`hydrate()` on identity change via `subscribeToIdentityChange`, and one-time migrate any pre-namespacing legacy data (stored under the bare, unnamespaced key) into the active namespace on first run.
+- `quizScoreStore.setScore(...)` takes a `completedAt` and silently no-ops if an existing entry is already newer — this recency check is what makes cloud merges safe to apply unconditionally without a separate conflict-detection step.
+
+Auth tokens are separated from the rest of auth state: `src/features/auth/store/secureTokenStorage.ts` persists `AuthTokens` via `expo-secure-store` (Keychain/Keystore) on native, falling back to AsyncStorage on web where SecureStore has no equivalent. `authStore.ts`'s `hydrate()` migrates any legacy `{ user, tokens }` blob that predates this split.
+
+**Cloud sync** (`src/features/progress/service.ts`) makes quiz scores and lesson completions account-scoped on the backend, on top of the local stores above:
+- `syncQuizAttempt` / `syncLessonCompletion` — POST to `/api/v1/quiz-progress` / `/api/v1/lesson-progress` immediately after a local write; on failure, the payload is queued to AsyncStorage (`pending_progress_sync`) for retry.
+- `fetchAndMergeCloudProgress(accessToken)` — called on session restore/login (see `app/index.tsx`, `app/_layout.tsx`, `app/quiz/[id].tsx`, `app/lesson/[id].tsx`): GETs `/api/v1/progress` and merges results into the local stores, then flushes the pending queue. Lesson completions are idempotent booleans; quiz scores go through `setScore`'s recency check so a newer unsynced local attempt is never clobbered by a stale cloud snapshot.
+- Backend: `server/features/progress/controller/controller.ts` in the dashboard — one row per `(userId, quizId)` / `(userId, lessonId)`, upserted on retake.
 
 ## TTS
 
