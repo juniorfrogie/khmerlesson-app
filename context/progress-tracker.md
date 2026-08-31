@@ -664,3 +664,66 @@ Every remaining unchecked item in this tracker falls into one of these buckets �
 4. Decide the open business/content items (store listing copy, target audience, Khmer localization) whenever Play Console work starts.
 
 The repository is left in a working state on both sides: all commits are clean, self-contained, and pass their respective type-checkers/linters/tests; nothing was pushed or deployed.
+
+---
+
+## Integration Validation (2026-08-31)
+
+Session goal: integration-readiness review of the above run, not new feature work. Reviewed both repos on `feature/khmerlesson-improvements` (both clean, no stray uncommitted changes) via static inspection + three parallel deep-review passes (backend/migration, mobile auth/subscription, mobile progress-sync/legacy-migration), since no device/simulator/database was reachable in this environment.
+
+### Migration
+
+* `migrations/0004_cloud_progress.sql` reviewed in full against `shared/schema.ts` (`quiz_attempts`/`lesson_completions`) — exact match on columns, types, PKs, FKs/cascade, unique constraints, indexes, nullability, defaults.
+* Idempotent — same `CREATE TABLE/INDEX IF NOT EXISTS` + `DO $$ ... EXCEPTION WHEN duplicate_object` convention as `0001`-`0003`; confirmed by diffing against `0003_debug_logs.sql`. Safe to run twice.
+* Purely additive — no `ALTER`/`DROP`/`RENAME` on any existing table/column; cannot affect existing user/subscription/quiz/course data.
+* **Environment**: `DATABASE_URL` unavailable (no `.env` in either repo, confirmed without printing any value; `drizzle.config.ts` throws immediately without it) — same as the prior run found. Per the standing safety rule, this blocks migration execution entirely (not a production/uncertain-environment case — there is simply no reachable database here).
+* `[BLOCKED — DATABASE ENVIRONMENT REQUIRES HUMAN CONFIRMATION]` — migration **not applied**. Resulting schema **not verified** against a live database (still the single largest unverified gap, as the prior run also flagged).
+
+### Backend
+
+* **Progress persistence**: controller queries match schema column-for-column; `upsertQuizAttempt`/`upsertLessonCompletion` use `onConflictDoUpdate` keyed on the actual unique constraints — retried/duplicate client calls update in place, never duplicate rows.
+* **Authorization**: `GET /api/v1/progress`, `POST /api/v1/quiz-progress`, `POST /api/v1/lesson-progress` all derive `userId` solely from `req.user?.id`; Zod insert schemas `.omit()` `userId`, so it can't be smuggled through a request body even before the server-side overwrite. No cross-account read/write path found by inspection.
+* **Account deletion**: `DELETE /api/v1/me` (`server/api.ts`) is self-scoped to `req.user.id`, never a client-supplied id. Cascade traced: `subscriptions`/`quiz_attempts`/`lesson_completions` all `ON DELETE CASCADE` to `users.id` (deleted with the account); `debug_logs.userId` is `ON DELETE SET NULL` (rows orphan intentionally, logs retained). No FK lacks an explicit `onDelete` action, so no accidental delete-blocked-by-FK failure mode.
+* **Backward compatibility**: both new-endpoint commits (`aef1c3e`, `c7ae914`) confirmed purely additive via `git show --stat` — no existing route or response shape modified. The currently-released iOS app is unaffected regardless of whether this deploys.
+* `npm run check` (tsc): clean.
+
+### Mobile
+
+* **Authentication**: token-refresh retry-once + dedup logic traced end-to-end — no infinite-loop path found; concurrent callers correctly share one in-flight refresh via the module-level `refreshPromise` cleared in `.finally()`. No raw token values found in any log call. Legacy AsyncStorage→SecureStore token migration is idempotent and non-destructive (new namespaced write always precedes the old key's removal in the analogous progress-store migrations; the auth migration's own gap is described below and fixed). Logout correctly clears SecureStore tokens; deliberately leaves `progressStore`/`quizScoreStore` untouched (namespacing, not clear-on-logout, confirmed to match the documented intent).
+* **Subscription**: `unknown`/`loading`/`inactive`/`error` confirmed as genuinely distinct states, never collapsed; the original bug (trial banner flashing under `unknown`) stays fixed. `main-lessons`' semi-public token-expiry gap is covered in practice — `app/index.tsx` awaits the auth store's proactive refresh before any course-list fetch, and foreground resume is separately covered by `revalidateIfExpiring()`. Restore Purchases confirmed to call the existing `reconcileAvailablePurchases()`/`syncSubscription()` unmodified — no parallel purchase-verification path.
+* **Two real defects found and fixed** (both directly inside this cycle's explicit verification list — see below).
+* **One additional defect found and fixed**: interrupted SecureStore migration could leave plaintext legacy tokens stuck in `AsyncStorage` forever (see below).
+* `tsc --noEmit`: clean. `expo lint`: same 5 pre-existing errors in `app/quiz-guide.tsx` (predates this improvement cycle, commit `ed5edcb`) and pre-existing warnings only — no new lint issues. `jest`: **7 suites, 27 tests, all passing** (was 4/18 before this session; +3 new suites/9 tests for the fixes below).
+
+### Issues Found — all fixed, tested, and committed
+
+1. **Network failure during proactive token refresh incorrectly forced sign-out** (`src/features/auth/store/authStore.ts`, `refreshIfNeeded`). Task-relevant: Phase 2 explicitly required verifying "network failure is not incorrectly treated as invalid credentials" — it was. Any thrown error from `refreshTokens()` (including a plain network/timeout failure with no HTTP response at all) was treated identically to the backend explicitly rejecting the refresh token, calling `signOut()` either way. Fixed: only sign out when the thrown error actually carries a `status` (meaning the backend responded, e.g. 401 on a genuinely invalid/expired/blacklisted refresh token); a network/timeout failure now leaves the session untouched so a later cold-start/foreground attempt can retry. New tests: `src/features/auth/store/__tests__/authStore.refresh.test.ts` (3 tests).
+2. **Offline-queued quiz score could later overwrite a newer, already-synced score** (`src/features/progress/service.ts`, `flushPendingProgress`). Scenario: a quiz attempt fails to sync while offline and is queued; the same quiz is retaken online and syncs successfully, updating both the local store and the cloud to a newer `completedAt`; a later foreground flush replayed the stale queued item, silently regressing the cloud row back to the older score (the backend upsert has no recency check of its own). Fixed: before sending a queued quiz item, it's now checked against the local store's already-tracked `completedAt` for that lesson (the same recency rule `quizScoreStore.setScore()` already applies to its own writes) and dropped rather than replayed if superseded. Lesson completions needed no equivalent guard — already boolean-idempotent. New tests: `src/features/progress/__tests__/service.flush.test.ts` (3 tests).
+3. **Interrupted SecureStore migration could leave plaintext legacy tokens stuck in AsyncStorage indefinitely** (`authStore.ts`, `hydrate()`). The original migration wrote tokens to SecureStore and stripped the legacy AsyncStorage field in one branch, gated on "SecureStore is currently empty." A crash between those two steps left SecureStore populated but the plaintext copy un-stripped — and every subsequent launch would find SecureStore already populated, so the cleanup branch would never run again, leaving the plaintext tokens there permanently (data wasn't lost, but the encryption-at-rest goal of the migration was silently defeated for that install). Fixed: cleanup is now a separate step, gated only on "the legacy blob still has a `tokens` field and SecureStore now has tokens" (true whether they arrived via this run's migration or a prior run's), so an interrupted install finishes the cleanup on its next hydrate. New tests: `src/features/auth/store/__tests__/authStore.migration.test.ts` (3 tests).
+
+None of these three fixes touch backend code, add new endpoints, or change any request/response shape — no backward-compatibility impact.
+
+### Legacy Migration (Phase 13)
+
+* Reviewed both `progressStore.ts`/`quizScoreStore.ts`'s legacy migration and the auth SecureStore migration (above) for idempotency, non-destructiveness, and crash-safety.
+* Progress-store legacy migration: correctly writes the new namespaced key before deleting the old un-namespaced key (crash between the two leaves both copies present, never a data hole); flag-gated so it only runs once; a previously-completed lesson/quiz score cannot become incomplete or regress through the merge (pure union for lesson completion; recency-gated for quiz scores) or through the cloud-merge path, which reuses the identical recency rule.
+* **Minor unresolved concern, not fixed this session** (low severity, edge case): `progressStore.ts`/`quizScoreStore.ts` each hold `activeNamespace` as a single shared module-level variable reassigned synchronously at the top of every `hydrate()`, with no per-call snapshot/generation guard. A rapid double account-switch that causes two overlapping `hydrate()` calls could theoretically interleave reads/writes against the wrong namespace mid-migration. Not exercised by the existing namespacing tests. Flagged for a human decision on whether it's worth a generation-counter guard, since reproducing the race requires genuinely concurrent identity switches that don't occur in the app's normal single-threaded navigation flow.
+
+### Offline Synchronization (Phase 15)
+
+* Local writes (`setScore`/`markComplete`) happen unconditionally before any network attempt — a completed lesson/quiz is never lost regardless of connectivity.
+* Failed syncs are queued (`pending_progress_sync`), not discarded; the queue is only cleared of an item after a confirmed success response, never optimistically.
+* Duplicate delivery is safe by construction (backend upsert keyed on the real unique constraints).
+* The one real conflict-handling gap found (stale queued write replaying over a newer synced one) is fixed — see Issue #2 above.
+
+### Tests
+
+* `khmerlesson-dashboard`: `npm run check` — clean. No live-database tests possible (no `DATABASE_URL`).
+* `khmerlesson-app`: `npx tsc --noEmit` — clean. `npx expo lint` — 5 pre-existing errors (`app/quiz-guide.tsx`, predates this cycle) + pre-existing warnings only, no new issues. `npx jest` — **7 suites / 27 tests, all passing**.
+
+### Remaining Blockers (unchanged from the prior run, plus the one new minor item above)
+
+* Real iOS/Android device or simulator required — Keychain/Keystore behavior, background/foreground transitions, real Google/Apple sign-in, the upgrade-path/legacy-migration test against a real previous build, first Android build.
+* Database setup — no `DATABASE_URL` reachable in this environment; migration application and live-database verification of the new progress endpoints, account deletion, and authorization checks are all still pending a human running them against a real dev/staging database.
+* Google Cloud Console / Play Console access — Android OAuth client + SHA-1 registration, Play Console app creation, Play Billing setup (all pre-existing blockers, unchanged).
+* Human decision on the namespacing-race edge case above (low priority).

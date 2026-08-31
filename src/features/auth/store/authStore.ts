@@ -50,11 +50,20 @@ async function refreshIfNeeded(
     await get().refreshTokens();
     logger.info(traceId, 'session_restored', { refreshed: true, trigger });
   } catch (err) {
-    // Refresh token itself invalid/expired/blacklisted — this is a
-    // genuinely dead session, not a merely-expired access token, so clear
-    // it now rather than letting every subsequent screen rediscover the
-    // same failure independently.
-    logger.warn(traceId, 'session_refresh_failed', { message: (err as Error).message, trigger });
+    // A `status` on the error means the backend actually responded (see
+    // rawApiPost in api.ts) — e.g. 401 because the refresh token itself is
+    // invalid/expired/blacklisted, a genuinely dead session. No `status`
+    // means the request never got a response at all (offline, timeout,
+    // DNS failure, etc.) — that says nothing about whether the refresh
+    // token is valid, so it must not be treated as one. Signing out on a
+    // transient network failure would force a real session out from under
+    // a user who simply has no signal right now.
+    const status = (err as Error & { status?: number }).status;
+    if (status === undefined) {
+      logger.warn(traceId, 'session_refresh_network_error', { message: (err as Error).message, trigger });
+      return;
+    }
+    logger.warn(traceId, 'session_refresh_failed', { message: (err as Error).message, trigger, status });
     await get().signOut();
   }
 }
@@ -120,13 +129,20 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       let tokens = await getSecureTokens();
       if (!tokens && parsed.tokens) {
         // Legacy pre-SecureStore install: tokens were stored alongside the
-        // user profile in plain AsyncStorage. Migrate them into SecureStore
-        // once, then strip them out of the AsyncStorage blob so they stop
-        // lingering there unencrypted.
+        // user profile in plain AsyncStorage. Migrate them into SecureStore.
         tokens = parsed.tokens;
         await setSecureTokens(tokens);
-        await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user }));
         logger.info(traceId, 'auth_tokens_migrated_to_secure_store', {});
+      }
+      if (parsed.tokens && tokens) {
+        // Strip any lingering plaintext tokens field from the legacy blob.
+        // Kept as its own step (not folded into the migration branch above)
+        // so a run that crashed after the SecureStore write but before this
+        // cleanup still finishes the job on its next launch — otherwise
+        // `getSecureTokens()` would already return non-null next time and
+        // the migration branch's `if` would never run again, leaving the
+        // plaintext copy stuck in AsyncStorage forever.
+        await AsyncStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify({ user }));
       }
 
       if (!tokens) return; // a user record with no tokens at all — nothing to restore

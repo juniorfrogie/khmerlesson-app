@@ -4,6 +4,21 @@ import { logger, newTraceId } from '@/src/shared/utils/logger';
 import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
 import { useProgressStore } from '@/src/features/lessons/store/progressStore';
 
+// A queued quiz item can be superseded before it's ever flushed — e.g. it
+// failed while offline, then the same quiz was retaken online and synced
+// directly, updating both the local store and the cloud to a newer
+// completedAt. Replaying the older queued item afterward would silently
+// regress the cloud row back to the stale score, since the backend upsert
+// has no recency check of its own. The local store already knows which
+// completedAt is current (same recency rule as its own setScore), so a
+// queued item is only sent if it's still at least as new as what the device
+// itself has already recorded. Lesson completion needs no such guard — it's
+// a boolean and markComplete()/the backend upsert are already idempotent.
+function isStaleQuizItem(item: Extract<PendingSync, { type: 'quiz' }>): boolean {
+  const current = useQuizScoreStore.getState().getScore(String(item.body.lessonId));
+  return !!current && current.completedAt > item.body.completedAt;
+}
+
 // Cloud progress sync — quiz scores and lesson completion are account-scoped
 // on the backend (khmerlesson-dashboard: GET/POST /api/v1/progress,
 // /api/v1/quiz-progress, /api/v1/lesson-progress) rather than device-local
@@ -69,7 +84,12 @@ export async function flushPendingProgress(accessToken: string): Promise<void> {
 
   const traceId = newTraceId();
   const stillPending: PendingSync[] = [];
+  let dropped = 0;
   for (const item of items) {
+    if (item.type === 'quiz' && isStaleQuizItem(item)) {
+      dropped += 1;
+      continue;
+    }
     try {
       await sendPending(accessToken, item, traceId);
     } catch {
@@ -79,7 +99,8 @@ export async function flushPendingProgress(accessToken: string): Promise<void> {
   await setPending(stillPending);
   if (stillPending.length < items.length) {
     logger.info(traceId, 'pending_progress_flushed', {
-      flushed: items.length - stillPending.length,
+      flushed: items.length - stillPending.length - dropped,
+      dropped,
       stillPending: stillPending.length,
     });
   }
