@@ -6,16 +6,16 @@ Update this file after every meaningful implementation change. If bugs or any su
 
 Remaining work is split into two phases so iOS can ship independently of Android:
 
-- **Phase 1 — iOS App Store: shipped and live.** The full P0 roadmap (auth/session reliability, subscription sync, cloud quiz/lesson progress) plus P2 (observability, testing) is implemented, migrated against a live database, and integration-tested — see "Database Migration Verification & Live Integration Test" and "Phase 1 Close-Out Fixes" below. **Update 2026-08-31**: Apple's Guideline 2.1(b)/3.1.2(c) rejection is resolved — **1.0.2 (build 21) was approved and is now live** on the App Store (see "iOS Release 1.0.2 (21) — Approved & Live" below). No further Phase 1 action is required to ship what's already out; the device/simulator QA checklist remains open as regression coverage for the *next* iOS build, not a blocker for the current one.
-- **Phase 2 — Google Play/Android: deferred, unchanged.** Everything under "P1 — Google Play Launch" (Phase 4.1–4.8) below is untouched and stays exactly as scoped — no code work happens here until Phase 1 ships.
+- **Phase 1 — iOS App Store: shipped and live.** The full P0 roadmap (auth/session reliability, subscription sync, cloud quiz/lesson progress) plus P2 (observability, testing) is implemented, migrated against a live database, and integration-tested — see "Database Migration Verification & Live Integration Test" and "Phase 1 Close-Out Fixes" below. **Update 2026-08-31**: Apple's Guideline 2.1(b)/3.1.2(c) rejection is resolved — **1.0.2 (build 21) was approved and is now live** on the App Store (see "iOS Release 1.0.2 (21) — Approved & Live" below). No further Phase 1 action is required to ship what's already out; the device/simulator QA checklist remains open as regression coverage for the *next* iOS build, not a blocker for the current one. **Update 2026-08-31 (later session)**: a real, previously-unknown production bug was found and fixed — see "Null Data-Envelope Bug Fix & 1.0.3 Rebuild" below. Version bumped to **1.0.3**; a build (23) has already gone through TestFlight once (before the fix, on staging by mistake) and a corrected rebuild is now in progress.
+- **Phase 2 — Google Play/Android: greenlit 2026-09-01.** See "Android First Play Build" below — first local release AAB produced and verified; `READY WITH EXTERNAL BLOCKERS` (Android SDK/keystore/Play Console credentials still needed from a human before actual upload).
 
 ## Current Phase
 
-- Phase 1 (iOS) shipped and live (1.0.2, build 21). Phase 2 (Android/Google Play) not started — see "P1 — Google Play Launch" below.
+- Phase 1 (iOS) shipped and live (1.0.2, build 21; 1.0.3 rebuild in progress separately). Phase 2 (Android/Google Play): first local release AAB produced and verified 2026-09-01 — see "Android First Play Build" below.
 
 ## Current Goal
 
-- Phase D complete — Subscription UX fixes shipped. P0/P2 roadmap complete, live-verified, and now shipped to the App Store. Next: Phase 2 (Google Play) whenever that's greenlit.
+- Android: first Play-ready AAB produced locally and verified (package ID, versioning, signing state, permissions). Next: human provides Play Console/keystore/Google OAuth credentials (see "Credentials / Configuration Needed From User" in "Android First Play Build" below), then upload.
 
 ## Completed
 
@@ -840,3 +840,145 @@ Supersedes the Apple rejection recorded in `error-app-review.md` (which covered 
 **Live-verified** against a running dev server (`NODE_ENV=development` + `ALLOWED_ORIGINS` set to two fake staging-style URLs): both `ALLOWED_ORIGINS` entries and the existing localhost origin got `Access-Control-Allow-Origin` echoed back; an unrelated origin got no CORS header at all (rejected, as before).
 
 **Staging action required**: add `ALLOWED_ORIGINS=<the actual staging URL>` (comma-separate more than one if needed) to the DigitalOcean staging app's environment variables — no code change needed for additional origins going forward, just this env var.
+
+---
+
+## Null Data-Envelope Bug Fix & 1.0.3 Rebuild (2026-08-31, later session)
+
+Started from a device-testing request (`rm -rf ios` + rebuild for a physical-device TestFlight run) and surfaced a real, previously-unknown production bug along the way, plus two staging-only config issues that aren't bugs in the app itself.
+
+### iOS native rebuild + TestFlight (1.0.3)
+
+- `app.json` bumped `version` **1.0.2 → 1.0.3**; `ios.buildNumber` bumped to `23` locally, though — consistent with the EAS remote-auto-increment behavior already documented above — it was later found reverted back to `22` in the working tree by some subsequent `expo`/EAS-aware command; the actual archived TestFlight build's `Info.plist` still correctly showed `23`, so the discrepancy is cosmetic (source-of-truth drift in `app.json`, not a wrong shipped build) but worth rechecking before the *next* archive.
+- A build (23) was uploaded to TestFlight, installed, and **all data failed to load** — root cause below.
+- Separately hit and worked around an Expo-CLI-only bug: `npx expo run:ios --device` builds cleanly but its own USB device-install step (`LockdowndClient.startSession`) throws `TypeError: Cannot convert object to primitive value` against this iOS 26 device — a known incompatibility, not a project bug. Workaround: build via `expo run:ios`/`xcodebuild` as normal, then install + launch directly with `xcrun devicectl device install app` / `device process launch`, bypassing Expo's own installer. Metro still needs to be started separately (`expo start --dev-client`) since the device-install path skips it.
+- Also hit a real concurrency issue (self-inflicted): two overlapping `xcodebuild` invocations against the same `DerivedData` produced `error: unable to attach DB ... database is locked`. Not a project bug — just don't run two builds against the same `ios/` at once; clearing the stale `XCBuildData/build.db` and retrying with a single build resolved it.
+
+### Staging config issues found (not app bugs — staging-only, DigitalOcean env config)
+
+1. **Transient API-key rejection** — staging briefly returned `401 Valid API key required` for the mobile app's actual configured key; self-resolved (almost certainly a pending-deploy timing issue, not a real key mismatch — re-tested minutes later with the identical key and got `200`).
+2. **Dummy bucket storage placeholder leaking into API responses** — **fixed [BACKEND]**. Staging intentionally sets `BUCKET_ORIGIN_END_POINT`/`BUCKET_ACCESS_KEY`/`BUCKET_SECRET_ACCESS_KEY`/`BUCKET_NAME` to placeholder/`"dummy"` values (no real Spaces storage configured there) to satisfy startup — by design, per explicit user confirmation, not a misconfiguration to "fix" at the infra level. But `MainLessonController.getPublishedMainLessons()` (`khmerlesson-dashboard/server/features/main-lessons/controller/controller.ts`) unconditionally concatenated `BUCKET_ORIGIN_END_POINT` into every `thumbnailUrl`, baking a dead `https://example.invalid/...` URL into `/api/v1/main-lessons` responses instead of `null`. Fixed with a new `isBucketStorageConfigured()` check (treats the `"dummy"` sentinel — the project's own existing placeholder convention — as "not configured") that nulls `thumbnailUrl` instead; the mobile client already falls back gracefully to a local `book-cover.png` placeholder for a null `thumbnailUrl` (`CourseCard.tsx`), so this required no mobile-side change at all.
+
+### The real bug: null data-envelope unwrapping (`src/services/api.ts`)
+
+User report: "quiz progress is saved after logout and re-login, but subscription recovery doesn't." Traced via live Metro console logs (no DB access was available/authorized this session) rather than guessing from static code:
+
+- `service.ts`'s own diagnostic log line (`subscription_active {"status": undefined}`) proved `syncSubscription()`'s `sub` was truthy but had no real `.status` — impossible for an actual `Subscription | null` value.
+- Root cause: `rawApiFetch`/`rawApiPost`/`rawApiPostForm` all did `return (json?.data ?? json) as T`. `??` treats an explicit `data: null` (a *legitimate* envelope value — e.g. "no active subscription found") exactly the same as `data` being absent entirely, and falls back to the **whole envelope object** (`{success, data}`) instead of `null`. That object is truthy, so any caller expecting `T | null` (chiefly `syncSubscription`) silently received a garbage non-null, non-`Subscription` object instead of a clean "not subscribed" state.
+- **Fix**: new `unwrapEnvelope<T>(json)` helper — checks for the `data` *key's presence* (`'data' in json`), not its value, so `{data: null}` correctly unwraps to `null` while a response with no envelope at all still falls back to the raw body. Replaces all 4 call sites.
+- Confirmed live end-to-end after the fix: `subscription_sync_completed_none` (was mislabeled `subscription_active` before) for the true "no subscription" case; then a real plan-1 purchase (which itself hit a one-off Apple **sandbox** transaction-state error unrelated to this bug — `"Finished an inactive subscription transaction"`, resolved by retrying, exactly as the error message said to) correctly registered and immediately showed `subscription_active {"status": "active"}` on a fresh cold start with **no manual navigation required** — the actual regression is fixed, not just the symptom.
+- **Regression tests added**: `src/services/__tests__/api.test.ts` — new `describe('api.ts — envelope unwrapping')` block, 2 tests (`data: null` → `null`; no-envelope response → raw body passthrough). Also fixed a latent test-isolation bug found while adding these: an earlier test in the same file permanently reassigned `global.fetch`, leaking into whatever ran after it — extracted the shared mock into a named `mainFetchMock` function, reset in every `beforeEach`. **31/31 tests pass** (was 29 before this session's dashboard CORS-fix baseline — 2 new).
+
+### Merged to `main` (both repos) — scoped to just this session's fixes, not the whole feature branch
+
+`main` was 18+ commits behind `feature/khmerlesson-improvements` in the app repo (5 in the dashboard repo) — explicitly **not** merging the whole branch, per user decision, only today's 3 fixes:
+
+- **khmerlesson-app** `main`: `47f2bc4` (version bump 1.0.3) + `71313f6` (null-envelope fix). The envelope fix could not cherry-pick cleanly — `main`'s `api.ts` still has the **pre-refactor** structure (no `withTokenRefresh`/`rawApiFetch` split, predates the whole token-refresh interceptor work above), so the equivalent fix was hand-ported directly onto that older structure instead (same `unwrapEnvelope` concept, applied to `main`'s 4 call sites). **`main`'s `api.ts` still lacks the token-refresh interceptor entirely** — that's a separate, much larger piece of unmerged work, not something this session added to `main`.
+  - **Not pushed** — `git push origin main` was denied (403): the authenticated GitHub account (`juniorfrogies`) does not have write access to `juniorfrogie/khmerlesson-app` (note the account-name mismatch, not a generic auth failure — the *same* account successfully pushed the dashboard repo below). **Human action needed**: add `juniorfrogies` as a collaborator on `juniorfrogie/khmerlesson-app`, or push from an account/token that already has access.
+- **khmerlesson-dashboard** `main`: `0e95175` (thumbnailUrl null fix) — cherry-picked cleanly, **pushed to `origin/main` successfully**.
+- Both repos' `feature/khmerlesson-improvements` branches were left exactly as they were (stashed before switching to `main`, popped back after) — including pre-existing uncommitted work on that branch not from this session: an Android IAP purchase-flow addition (`purchaseService.ts` + new `productId.ts`, offer-token handling + purchase-phase tracking) and a `CLAUDE.md` doc update for the `progress` feature — neither touched or committed by this session.
+
+### Verified against production (`https://khmerlessons.app`) after switching `.env`
+
+- ✅ Session restore, subscription sync (`subscription_active`) — confirms the API key, auth, and the plan-1 purchase all correctly resolve against production's real database.
+- ❌ **Expected gap, not a bug**: `/api/v1/progress` fails with `JSON Parse error: Unexpected character: <` against production — the cloud quiz/lesson-progress feature (`c7ae914`, Phase 3 above) only exists on `feature/khmerlesson-improvements`, never merged to `main`, so production has no matching route at all; the request falls through to the dashboard's static-file SPA fallback (serves `index.html` for any unmatched path) instead of a JSON 404. Will resolve automatically once/if that feature is merged and deployed — not something to chase as a bug in the meantime.
+
+### Remaining / next steps
+
+- Push `khmerlesson-app`'s 2 local `main` commits once GitHub collaborator access is fixed.
+- Rebuild (bump `ios.buildNumber` past the already-used `23`) and re-submit to TestFlight now that `.env` correctly points at production and the null-envelope fix is in — **in progress as of this entry**.
+- Decide (separately, not yet decided) whether/when the `progress` cloud-sync feature should also ship to `main`/production.
+
+---
+
+## Android First Play Build (2026-09-01)
+
+Goal: produce and verify a first local Android release AAB to unlock subscription-product creation in Play Console (Play requires the app's first build before its monetization section becomes usable). Explicitly stopped short of any upload. Picked up a pre-existing, uncommitted, half-finished Android IAP change (`purchaseService.ts` + `productId.ts` — offer-token handling, purchase-phase tracking, platform-aware product ID selection) left on this branch from an earlier session and finished wiring it in, on top of the new build-readiness work below.
+
+### Package identity (Phase 4.1, continued)
+
+Audit re-confirmed: `com.digital606.khmerlessons` (Android) vs `com.digital606.khmerlesson` (iOS) is the correct, intentional, already-documented split (see `CLAUDE.md` and the "Confirmed Platform Identifiers" section below). No stray references to the old/wrong value found anywhere in either repo. The generated native project (`android/app/build.gradle`) correctly uses `com.digital606.khmerlessons` for both `namespace` and `applicationId` — verified directly in the built AAB's manifest (see below), not just the source config.
+
+### Android product ID selection (Phase 5) — fixed a real bug
+
+- **Bug found**: `app/subscription/index.tsx` called `plan.productIdIos` unconditionally in both the product-availability check and the actual purchase call, regardless of platform — so Android would have tried to buy the *iOS* App Store SKU. Not a hardcoded literal, but functionally the same problem: the wrong API-provided field was being read on Android.
+- **Fix**: wired in the pre-existing (uncommitted) `src/features/subscriptions/productId.ts`'s `getStoreProductId(plan)` — reads `plan.productIdIos` or `plan.productIdAndroid` based on `Platform.OS`, both of which come from the backend's `GET /api/v1/subscription-plans` response (`subscriptionPlans.productIdAndroid` column already existed server-side, previously unused — confirmed via `db.select().from(subscriptionPlans)`, no field-stripping). **Nothing is hardcoded** — this was an explicit ask mid-session, confirmed satisfied.
+- `MissingStoreProductIdError` (plan has no product ID configured for the current platform — expected right now, since no Android products exist in Play Console yet) is now caught in the availability-check effect and surfaces as the same "unavailable" state already used for an Apple-side lookup miss, instead of throwing.
+- Also fixed two hardcoded iOS-only UI strings to be platform-aware while touching this screen: "Not available from App Store" → "…from App Store/Google Play", and the Expo-Go warning's `expo run:ios` hint → `expo run:android` on Android.
+
+### Android IAP compile readiness (Phase 6) — finished the pre-existing partial work
+
+`purchaseService.ts` had dead, unused exports left from an interrupted earlier session (`resolveAndroidOfferToken`, `acknowledgeIfAndroid`, `setPurchasePhase`/`getPurchasePhase`/`subscribeToPurchasePhase` — zero call sites, confirmed via grep). Wired all of them in rather than leaving them unused or deleting them:
+- Play Billing v5+ requires an `offerToken` (not just the SKU) to purchase a subscription — `requestPlanPurchase` now resolves one via `resolveAndroidOfferToken` on Android only and passes it as `google.subscriptionOffers` in the `requestPurchase` call (confirmed the correct shape — `{ sku, offerToken }` — against `node_modules/react-native-iap`'s own `.d.ts`, since `iap` is untyped `any` here and would not have caught a wrong shape at compile time).
+- `acknowledgeIfAndroid` (Play Billing requires acknowledging a purchase within 3 days or it auto-refunds) is now called after a successful backend registration, both on a fresh purchase and on passive reconcile.
+- `PurchasePhase` state machine now actually transitions (`purchasing` → `verifying` → `active`/`cancelled`/`failed`) around the real purchase flow instead of sitting unused; no new UI consumes it yet (out of scope for this pass — the screen's existing local `purchasing`/`restoring` booleans already cover the UI need).
+- iOS purchase flow is provably unchanged: every new/changed code path is gated behind `Platform.OS === 'android'` or only touches the `google` half of the `requestPurchase` call object.
+
+### Android microphone permission removed (Phase 9)
+
+- **Finding**: the generated Android manifest declared `RECORD_AUDIO` plus a microphone foreground service (`AudioRecordingService`), sourced from `expo-audio`'s own config plugin — this app only ever plays TTS audio (`src/features/lessons/service/ttsService.ts`), it never records. Sensitive/dangerous permission, would need justifying in Play's Data Safety section for a feature the app doesn't have.
+- **Fix**: `app.json`'s `expo-audio` plugin entry now passes `{ "recordAudioAndroid": false }` — expo-audio's own plugin (`node_modules/expo-audio/plugin/build/withAudio.js`) supports this flag natively, so no custom manifest-patching config plugin was needed. **Android-only** — deliberately left the `microphonePermission` option untouched, so iOS's `NSMicrophoneUsageDescription` (already live in the shipped 1.0.2 build) is unaffected. Verified in the built AAB: `RECORD_AUDIO` is gone; iOS `Info.plist` still has the unchanged mic-usage string.
+- **Remaining permissions in the built release AAB** (verified via `bundletool dump manifest`, not just source config): `INTERNET`, `MODIFY_AUDIO_SETTINGS` (expo-audio, playback — legitimate), `READ_EXTERNAL_STORAGE` (capped `maxSdkVersion=32` in the final merge — expo-image/Glide's legacy-storage need, correctly scoped), `WRITE_EXTERNAL_STORAGE` (expo-file-system, uncapped — functionally a no-op above API 29's scoped storage but cosmetically broader than needed; `[NEEDS INVESTIGATION]`, low priority), `com.android.vending.BILLING` (correct, required for Play Billing).
+  - `[NEEDS INVESTIGATION]` **`SYSTEM_ALERT_WINDOW`** — present in this local release AAB, traced to `node_modules/react-native/ReactAndroid/src/debug/AndroidManifest.xml` (RN's own dev-overlay tooling manifest fragment), which should only merge into `debug` builds, not `release`. This local build was a raw `./gradlew bundleRelease`, not an EAS build — it's possible EAS's actual `production` profile excludes `expo-dev-launcher`'s native module entirely (this app has `expo-dev-client` as a real dependency, for internal dev-client builds) and would not have this leak; not confirmed either way. Low severity (not a "dangerous"/runtime-prompted permission, no Play Data Safety declaration needed) — flagged for a human to verify against an actual EAS production build before worrying about a fix.
+
+### Native project generated (Phase 3) + build config confirmed (Phase 4)
+
+- No `android/` existed (fully managed Expo workflow, as documented) — generated via `npx expo prebuild -p android --clean` (safe: nothing native/manual existed to lose, this is the first time `android/` has ever been generated on this branch). `android/` stays gitignored, as before — regenerate via the same command rather than hand-editing anything under it.
+- Resolved (auto-detected by Expo's own `ExpoRootProject` config, not guessed): `compileSdk 36`, `targetSdk 36`, `minSdk 24`, `buildTools 36.0.0`, `ndk 27.1.12297006`, `kotlin 2.1.20`.
+- `versionName` in the generated project correctly reads `1.0.3` from `app.json`. `versionCode` is `1` (prebuild's local default — **not** representative of what an actual EAS build would assign; `eas.json`'s `appVersionSource: "remote"` means EAS auto-increments this remotely, so the *next* real EAS-built AAB will carry whatever remote count Expo's servers are already at, not `1`. No action needed here — just don't read anything into this local build's `versionCode`).
+- API environment this build's JS bundle targets: **production**, `https://khmerlessons.app` — the only uncommented `EXPO_PUBLIC_API_BASE_URL` in the local `.env` at build time. This matches what the currently-live iOS app already talks to, so it's consistent, not a new risk — just worth recording since Phase 4 asks for it explicitly.
+- No cleartext traffic override, no `android:debuggable` in the release manifest — confirmed via `bundletool dump manifest` on the actual built AAB, not inferred from source.
+
+### Build environment set up (this machine had none)
+
+- No Android SDK/Studio existed on this machine at all. Installed via `brew install --cask android-commandlinetools`, then `sdkmanager`: `platform-tools`, `platforms;android-36`, `build-tools;36.0.0`, `ndk;27.1.12297006` (build-tools 35.0.0 also auto-pulled by a transitive dependency during the build). `ANDROID_HOME=/opt/homebrew/share/android-commandlinetools`.
+- Hit repeated build-lock contention from the IDE's own Java/Gradle extension auto-importing the newly-generated `android/` folder in the background (up to 6 concurrent Gradle daemons at once, racing the same `node_modules/*/build/` output directories) — resolved with the user's explicit go-ahead to stop the daemons (`gradle --stop` per version found running); not a code issue.
+- Hit real local disk-space exhaustion mid-build twice (a 4-ABI debug build attempt consumed ~10GB in native `.cxx` CMake intermediates alone) — recovered by clearing `~/Library/Developer/Xcode/DerivedData` (6.3GB, pure regenerable Xcode cache), `~/Library/Caches/Google` and `~/Library/Caches/CocoaPods` (regenerable caches), and by restricting subsequent local builds to `-PreactNativeArchitectures=arm64-v8a` (the architecture that matters for both real devices and Play distribution's most common target) to keep local verification builds affordable on this machine. **This ABI restriction is a local-verification-only shortcut** — the real Play upload artifact (built via EAS, per this project's existing `eas.json`, on infrastructure without this machine's disk constraint) should build the full architecture set unless a deliberate decision is made to ship arm64-v8a-only.
+
+### Build results (Phase 11–13)
+
+- **Debug** (`:app:assembleDebug`, arm64-v8a only): `BUILD SUCCESSFUL`. Gradle sync, Kotlin/Java compile, CMake/NDK native linking (react-native-reanimated, worklets, gesture-handler, nitro-modules, react-native-iap, expo-modules-core) all succeeded.
+- **Release** (`:app:bundleRelease`, arm64-v8a only): `BUILD SUCCESSFUL` in 4m53s. JS bundling (Metro, `expo-router/entry.js`) + Hermes + R8/dex + signing all ran and succeeded.
+- **AAB produced**: `android/app/build/outputs/bundle/release/app-release.aab` — 40,559,811 bytes.
+  - Package: `com.digital606.khmerlessons` ✅
+  - `versionName`: `1.0.3`, `versionCode`: `1` (local-build artifact of prebuild defaults — see note above, not what EAS would assign)
+  - `compileSdkVersion`/`platformBuildVersionCode`: `36`, `minSdkVersion`: `24`, `targetSdkVersion`: `36`
+  - Signed: yes (`META-INF/ANDROIDD.{RSA,SF}` present) — **with the standard Android debug keystore** (`android/app/debug.keystore`, the RN template default; well-known public fingerprint `SHA1 5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25`, not a secret). This is intentionally the "verify release compiles" key, not a real distribution key — Google Play will reject an upload signed with it. See Signing below.
+  - No `android:debuggable`, no cleartext override — release-appropriate.
+- **Note on scope**: this AAB is a **local single-ABI (arm64-v8a) verification build**, produced to prove the package identity, IAP/Google-Sign-In code, and permission set are all upload-ready — it is not itself the artifact that should be uploaded to Play Console. The actual first upload should come from an EAS build (this project's existing, already-configured path — `eas.json`'s `production` profile) once a human provides the credentials below.
+
+### Signing (Phase 10)
+
+- Current state: release build type signs with the debug keystore (see above) — deliberately unchanged, matches React Native's own template default, sufficient only to prove release-variant compilation. No secrets invented, none committed.
+- **Human action still required before any real upload**: generate a real upload keystore (`keytool -genkeypair ...` or let EAS generate/manage one — `eas credentials`), and decide whether to enroll in Play App Signing (recommended — Google then manages the actual distribution key from your upload key, so losing the upload key later isn't catastrophic). Do this via `eas credentials` for the `production` profile rather than hand-rolling a local keystore, since that's how this project's existing EAS setup expects to sign release builds.
+
+### Google Sign-In (Phase 7) — compile-clean, runtime config still needed
+
+- Code path already handles both providers generically (`registrationType: "google"` via `expo-auth-session` PKCE); nothing Android-specific needed changing for compile-readiness — it compiled cleanly as part of the release build above.
+- **Blocked — human action required**: an Android-specific Google OAuth client ID (separate from the existing iOS client ID) and its SHA-1/SHA-256 signing-certificate fingerprints need to be registered in Google Cloud Console before Google Sign-In will work at runtime on Android. Once the real release keystore exists (see Signing above), its fingerprint (`keytool -list -v -keystore <path>`) is what needs registering. **Do not reuse the existing iOS client ID for Android** — confirmed the existing `EXPO_PUBLIC_IOS_CLIENT_ID`/`EXPO_PUBLIC_WEB_CLIENT_ID` env vars are iOS/web-scoped; see `.env.example` for the new Android-specific variable to add once issued.
+
+### Backend Android purchase contract (Phase 15)
+
+- Confirmed unchanged/compiles: `npm run check` and `npm test` both clean in `khmerlesson-dashboard` (8/8 tests pass, pre-existing baseline). No Android-specific server-side purchase verification exists yet (`server/services/iap/` only has `ios/storekit2/`) — **`[BLOCKED — CREDENTIAL REQUIRED: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON]`**, real Play purchase verification can't be built/tested without a live Play Console app + service account, which doesn't exist until after this AAB's first upload. Not attempted this session, correctly out of scope for the "first AAB" milestone per the task's own instructions.
+
+### Automated validation (Phase 17)
+
+- **Mobile**: `npx tsc --noEmit` clean. `npx expo lint` — 0 errors, 34 pre-existing-pattern warnings (same baseline as before this session's changes, no new warnings introduced). `npx jest` — 7 suites / 31 tests, all pass.
+- **Backend**: `npm run check` clean. `npm test` — 8/8 pass.
+
+### iOS backward compatibility (Phase 16)
+
+- `ios.bundleIdentifier` unchanged (`com.digital606.khmerlesson`). iOS product IDs untouched. Apple purchase flow untouched (see Phase 6 note above — every Android-specific change is platform-gated). `NSMicrophoneUsageDescription` unchanged. Backend API contracts unchanged (no backend code touched this session). Mobile jest suite (covers shared auth/subscription/progress store logic used by both platforms) passes clean.
+
+### Credentials / Configuration Needed From User
+
+| Environment Variable / Item | Required For | Where To Get It | Secret? | Environment |
+|---|---|---|---|---|
+| Real Android release/upload keystore | Signing the actual Play Console upload (debug keystore will be rejected by Play) | `eas credentials` (recommended, lets EAS generate + manage it) or `keytool -genkeypair` locally | Yes (the keystore + its passwords) | Production build/signing |
+| `GOOGLE_ANDROID_CLIENT_ID` | Google Sign-In on Android | Google Cloud Console → Credentials → new OAuth client, type "Android", using the release keystore's SHA-1/SHA-256 | Not secret itself (client IDs are public), but ties to the keystore above | Runtime, all environments once issued |
+| Release keystore SHA-1/SHA-256 fingerprint | Registering the Android OAuth client above, and Play Console's App Signing setup | `keytool -list -v -keystore <release-keystore-path>` once the keystore exists | No | Same as above |
+| `GOOGLE_PLAY_PACKAGE_NAME` | Backend Play Billing purchase verification (Phase 15, not yet built) | Already known: `com.digital606.khmerlessons` — just needs adding to backend `.env` when that work starts | No | Backend, when Phase 15 starts |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Backend Play Billing purchase verification (Phase 15, not yet built) | Google Play Console → Setup → API access → create a service account with Play Android Developer API access | Yes | Backend, when Phase 15 starts |
+| Play Console app creation | Unlocks subscription-product creation (the whole point of this milestone) | Create the app in Play Console using package `com.digital606.khmerlessons`, upload a real (non-debug-signed) AAB — either rebuild this one with a real keystore, or run a fresh EAS `production` build | No | Play Console |
+
+None of the above blocked any of this session's work — everything that could be verified without them was (compile-readiness, permission audit, package identity, product-ID selection logic, local release build). They're listed together here per the task's instructions, to be handled once, not one-by-one.

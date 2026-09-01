@@ -7,10 +7,9 @@
     "icon": "./assets/images/icon.png",
     "scheme": "khmerlessonapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "22",
+      "buildNumber": "24",
       "bundleIdentifier": "com.digital606.khmerlesson",
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -62,7 +61,12 @@
         }
       ],
       "react-native-iap",
-      "expo-audio",
+      [
+        "expo-audio",
+        {
+          "recordAudioAndroid": false
+        }
+      ],
       "expo-secure-store"
     ],
     "experiments": {

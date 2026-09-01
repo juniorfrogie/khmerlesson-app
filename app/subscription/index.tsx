@@ -10,6 +10,7 @@ import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useSubscriptionPlans } from '@/src/services/hooks/useSubscriptionPlans';
 import { useMySubscription } from '@/src/services/hooks/useMySubscription';
 import { syncSubscription } from '@/src/features/subscriptions/service';
+import { getStoreProductId, MissingStoreProductIdError } from '@/src/features/subscriptions/productId';
 import type { SubscriptionPlan } from '@/src/features/subscriptions/types';
 import {
   initPurchaseFlow,
@@ -102,7 +103,18 @@ export default function SubscriptionScreen() {
     const traceId = newTraceId();
     setProductAvailability(Object.fromEntries(plans.map(p => [p.id, 'checking'])));
     Promise.all(plans.map(async (plan) => {
-      const product = await loadSubscriptionProduct(plan.productIdIos, traceId);
+      let productId: string;
+      try {
+        productId = getStoreProductId(plan);
+      } catch (err) {
+        if (err instanceof MissingStoreProductIdError) {
+          logger.warn(traceId, 'plan has no store product ID for this platform', { planId: plan.id, platform: Platform.OS });
+          if (mounted) setProductAvailability(prev => ({ ...prev, [plan.id]: 'unavailable' }));
+          return;
+        }
+        throw err;
+      }
+      const product = await loadSubscriptionProduct(productId, traceId);
       if (!mounted) return;
       setProductAvailability(prev => ({ ...prev, [plan.id]: product ? 'available' : 'unavailable' }));
       if (product?.displayPrice) {
@@ -130,7 +142,8 @@ export default function SubscriptionScreen() {
         console.log('[subscribe] using token — userId in token:', payload?.id, '| store user.id:', user?.id);
       } catch { /* ignore */ }
 
-      const subscription = await requestPlanPurchase(selectedPlan.productIdIos, tokens.accessToken);
+      const productId = getStoreProductId(selectedPlan);
+      const subscription = await requestPlanPurchase(productId, tokens.accessToken);
 
       const isExpired = new Date(subscription.currentPeriodEndsAt) < new Date();
       if (isExpired) {
@@ -318,7 +331,9 @@ export default function SubscriptionScreen() {
                         )}
                         {isUnavailable && (
                           <View style={styles.unavailableBadge}>
-                            <Text style={styles.unavailableBadgeText}>Not available from App Store</Text>
+                            <Text style={styles.unavailableBadgeText}>
+                              {`Not available from ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}`}
+                            </Text>
                           </View>
                         )}
                       </View>
@@ -350,7 +365,9 @@ export default function SubscriptionScreen() {
                 <Ionicons name="warning-outline" size={20} color={Colors.warning} />
                 <Text variant="caption" color={Colors.text.secondary} style={styles.iapWarningText}>
                   In-app purchases require a native build.{'\n'}Run{' '}
-                  <Text variant="caption" weight="bold" color={Colors.text.primary}>expo run:ios</Text>
+                  <Text variant="caption" weight="bold" color={Colors.text.primary}>
+                    {Platform.OS === 'android' ? 'expo run:android' : 'expo run:ios'}
+                  </Text>
                   {' '}to test purchases.
                 </Text>
               </View>
