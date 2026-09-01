@@ -10,7 +10,7 @@ import { apiDelete } from '@/src/services/api';
 import { useMySubscription } from '@/src/services/hooks/useMySubscription';
 import { useSubscriptionPlans } from '@/src/services/hooks/useSubscriptionPlans';
 
-const SUPPORT_EMAIL = 'support@khmerlesson.com';
+const SUPPORT_EMAIL = 'info@khmerlessons.com';
 const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
 // Apple's standard EULA — no custom terms of use defined for this app.
 const TERMS_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
