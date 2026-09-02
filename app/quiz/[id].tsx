@@ -9,6 +9,8 @@ import { ProgressBar } from '@/src/shared/components/ProgressBar';
 import { useQuizDetail } from '@/src/services/hooks/useQuizDetail';
 import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
 import { useQuizScoreStore } from '@/src/features/quizzes/store/quizScoreStore';
+import { useAuthStore } from '@/src/features/auth/store/authStore';
+import { syncQuizAttempt } from '@/src/features/progress/service';
 
 export default function QuizScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -34,7 +36,20 @@ export default function QuizScreen() {
 
   useEffect(() => {
     if (!showResult || !quiz) return;
-    useQuizScoreStore.getState().setScore(String(quiz.lessonId), correctCount, total);
+    useQuizScoreStore.getState().setScore(String(quiz.lessonId), quiz.id, correctCount, total);
+
+    // Cloud sync — local write above already happened unconditionally, this
+    // is additive (see src/features/progress/service.ts). No accessToken
+    // (guest) simply means no cloud sync; the local score still applies.
+    const accessToken = useAuthStore.getState().tokens?.accessToken;
+    if (accessToken) {
+      syncQuizAttempt(accessToken, {
+        lessonId: quiz.lessonId,
+        quizId: quiz.id,
+        score: correctCount,
+        total,
+      }).catch(() => {});
+    }
   }, [showResult]);
 
   const questions = quiz?.questions ?? [];

@@ -7,10 +7,9 @@
     "icon": "./assets/images/icon.png",
     "scheme": "khmerlessonapp",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "buildNumber": "19",
+      "buildNumber": "24",
       "bundleIdentifier": "com.digital606.khmerlesson",
       "infoPlist": {
         "CFBundleURLTypes": [
@@ -32,6 +31,7 @@
       }
     },
     "android": {
+      "package": "com.digital606.khmerlessons",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -61,7 +61,13 @@
         }
       ],
       "react-native-iap",
-      "expo-audio"
+      [
+        "expo-audio",
+        {
+          "recordAudioAndroid": false
+        }
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

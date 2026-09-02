@@ -17,6 +17,7 @@ import RenderHtml from 'react-native-render-html';
 import { useWindowDimensions } from 'react-native';
 import { playTTS, stopTTS } from '@/src/features/lessons/service/ttsService';
 import { useQuizByLesson } from '@/src/services/hooks/useQuizByLesson';
+import { syncLessonCompletion } from '@/src/features/progress/service';
 
 const htmlBaseStyle = {
   fontSize: FontSize.md,
@@ -127,7 +128,16 @@ export default function LessonScreen() {
 
   const handleNext = () => {
     if (isLast) {
-      if (courseId && lesson) useProgressStore.getState().markComplete(courseId, lesson.id);
+      if (courseId && lesson) {
+        useProgressStore.getState().markComplete(courseId, lesson.id);
+
+        // Cloud sync — local write above already happened unconditionally,
+        // this is additive (see src/features/progress/service.ts).
+        const accessToken = useAuthStore.getState().tokens?.accessToken;
+        if (accessToken) {
+          syncLessonCompletion(accessToken, { mainLessonId: courseId, lessonId: lesson.id }).catch(() => {});
+        }
+      }
       router.back();
       return;
     }

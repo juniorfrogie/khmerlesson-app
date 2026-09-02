@@ -1,3 +1,5 @@
+> **RESOLVED — 2026-08-31.** Both guideline items below were addressed and resubmitted; **1.0.2 (build 21) was approved and is now live on the App Store** (confirmed by the user; see `context/progress-tracker.md`'s "iOS Release 1.0.2 (21) — Approved & Live" entry). Kept verbatim below as a historical record of the original rejection for build 1.0.1 (19) — do not treat this as the current review status.
+
 Hello,
 
 Thank you for your efforts to follow our guidelines. There are some outstanding issues that still need your attention.

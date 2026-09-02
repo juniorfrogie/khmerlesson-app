@@ -9,11 +9,14 @@ import { Button } from '@/src/shared/components/Button';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { useSubscriptionPlans } from '@/src/services/hooks/useSubscriptionPlans';
 import { useMySubscription } from '@/src/services/hooks/useMySubscription';
+import { syncSubscription } from '@/src/features/subscriptions/service';
+import { getStoreProductId, MissingStoreProductIdError } from '@/src/features/subscriptions/productId';
 import type { SubscriptionPlan } from '@/src/features/subscriptions/types';
 import {
   initPurchaseFlow,
   disposePurchaseFlow,
   requestPlanPurchase,
+  reconcileAvailablePurchases,
   loadSubscriptionProduct,
   getLastPurchaseTraceId,
   IAP_NOT_AVAILABLE,
@@ -34,19 +37,25 @@ type ProductAvailability = 'checking' | 'available' | 'unavailable';
 export default function SubscriptionScreen() {
   const router = useRouter();
   const { plans, loading: plansLoading, error: plansError } = useSubscriptionPlans();
-  const { subscription: mySubscription, loading: subscriptionLoading } = useMySubscription();
+  const { subscription: mySubscription, status: subscriptionStatus } = useMySubscription();
 
   const activePlanId =
     mySubscription && (mySubscription.status === 'active' || mySubscription.status === 'trial')
       ? mySubscription.planId
       : null;
 
-  // True only when we've confirmed the user has never had any subscription.
-  // Not shown while loading — avoids flashing the trial banner and then hiding it.
-  const isTrialEligible = !subscriptionLoading && mySubscription === null;
+  // True only when a sync has actually completed and confirmed no
+  // subscription record exists at all. Checking `status` (not a boolean
+  // "loading" flag derived from `mySubscription === null`) matters here:
+  // 'unknown'/'loading' must never read as "no subscription," or this would
+  // flash the trial banner for a split second before the real sync resolves
+  // (or worse, show it for a subscriber that just hasn't synced yet).
+  const isTrialEligible =
+    (subscriptionStatus === 'inactive' || subscriptionStatus === 'active') && mySubscription === null;
 
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
   const [purchasing, setPurchasing] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [iapUnavailable, setIapUnavailable] = useState(false);
   const [iapReady, setIapReady] = useState(false);
   const [productAvailability, setProductAvailability] = useState<Record<number, ProductAvailability>>({});
@@ -94,7 +103,18 @@ export default function SubscriptionScreen() {
     const traceId = newTraceId();
     setProductAvailability(Object.fromEntries(plans.map(p => [p.id, 'checking'])));
     Promise.all(plans.map(async (plan) => {
-      const product = await loadSubscriptionProduct(plan.productIdIos, traceId);
+      let productId: string;
+      try {
+        productId = getStoreProductId(plan);
+      } catch (err) {
+        if (err instanceof MissingStoreProductIdError) {
+          logger.warn(traceId, 'plan has no store product ID for this platform', { planId: plan.id, platform: Platform.OS });
+          if (mounted) setProductAvailability(prev => ({ ...prev, [plan.id]: 'unavailable' }));
+          return;
+        }
+        throw err;
+      }
+      const product = await loadSubscriptionProduct(productId, traceId);
       if (!mounted) return;
       setProductAvailability(prev => ({ ...prev, [plan.id]: product ? 'available' : 'unavailable' }));
       if (product?.displayPrice) {
@@ -122,7 +142,8 @@ export default function SubscriptionScreen() {
         console.log('[subscribe] using token — userId in token:', payload?.id, '| store user.id:', user?.id);
       } catch { /* ignore */ }
 
-      const subscription = await requestPlanPurchase(selectedPlan.productIdIos, tokens.accessToken);
+      const productId = getStoreProductId(selectedPlan);
+      const subscription = await requestPlanPurchase(productId, tokens.accessToken);
 
       const isExpired = new Date(subscription.currentPeriodEndsAt) < new Date();
       if (isExpired) {
@@ -169,6 +190,46 @@ export default function SubscriptionScreen() {
       setPurchasing(false);
       logger.info(getLastPurchaseTraceId() ?? 'unknown', 'handleSubscribe finally — setPurchasing(false)');
       flushLogs();
+    }
+  };
+
+  // Explicit user-facing restore — reconcileAvailablePurchases() already runs
+  // automatically on screen mount (see initPurchaseFlow's effect above), but
+  // silently; this gives the user a way to trigger it on demand and see the
+  // outcome, which app-store review generally expects for a subscription app.
+  // Deliberately does not touch reconcileAvailablePurchases()'s internals —
+  // that function is fragile, recently-fixed purchase-flow code (see
+  // context/subscription-debugging.md) — this only calls it and compares
+  // subscription state before/after via the same syncSubscription() used
+  // everywhere else, to infer and report success/failure to the user.
+  const handleRestorePurchases = async () => {
+    const { tokens } = useAuthStore.getState();
+    if (!tokens?.accessToken) {
+      Alert.alert('Sign in required', 'Please log in to restore purchases.');
+      return;
+    }
+    if (!iapReady) {
+      Alert.alert('Not Available', iapUnavailable
+        ? 'In-app purchases require a native build.'
+        : 'Please wait a moment and try again.');
+      return;
+    }
+
+    setRestoring(true);
+    const before = mySubscription;
+    try {
+      await reconcileAvailablePurchases();
+      const after = await syncSubscription(tokens.accessToken);
+      const changed = !!after && (!before || before.id !== after.id || before.status !== after.status);
+      if (changed) {
+        Alert.alert('Purchases Restored', 'Your subscription has been restored.');
+      } else {
+        Alert.alert('Nothing to Restore', 'No previous purchases were found for this account.');
+      }
+    } catch (err) {
+      Alert.alert('Restore Failed', (err as Error).message ?? 'Please try again.');
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -270,7 +331,9 @@ export default function SubscriptionScreen() {
                         )}
                         {isUnavailable && (
                           <View style={styles.unavailableBadge}>
-                            <Text style={styles.unavailableBadgeText}>Not available from App Store</Text>
+                            <Text style={styles.unavailableBadgeText}>
+                              {`Not available from ${Platform.OS === 'ios' ? 'App Store' : 'Google Play'}`}
+                            </Text>
                           </View>
                         )}
                       </View>
@@ -302,7 +365,9 @@ export default function SubscriptionScreen() {
                 <Ionicons name="warning-outline" size={20} color={Colors.warning} />
                 <Text variant="caption" color={Colors.text.secondary} style={styles.iapWarningText}>
                   In-app purchases require a native build.{'\n'}Run{' '}
-                  <Text variant="caption" weight="bold" color={Colors.text.primary}>expo run:ios</Text>
+                  <Text variant="caption" weight="bold" color={Colors.text.primary}>
+                    {Platform.OS === 'android' ? 'expo run:android' : 'expo run:ios'}
+                  </Text>
                   {' '}to test purchases.
                 </Text>
               </View>
@@ -340,6 +405,21 @@ export default function SubscriptionScreen() {
                   Privacy Policy
                 </Text>
               </Text>
+            )}
+            {!iapUnavailable && (
+              <TouchableOpacity
+                onPress={handleRestorePurchases}
+                disabled={restoring || purchasing}
+                style={styles.restoreBtn}
+              >
+                {restoring ? (
+                  <ActivityIndicator color={Colors.text.secondary} size="small" />
+                ) : (
+                  <Text variant="caption" color={Colors.text.secondary} weight="medium" style={styles.restoreText}>
+                    Restore Purchases
+                  </Text>
+                )}
+              </TouchableOpacity>
             )}
           </View>
 
@@ -498,4 +578,6 @@ const styles = StyleSheet.create({
   iapWarningText: { flex: 1, lineHeight: 18 },
   terms: { textAlign: 'center', lineHeight: 18 },
   termsLink: { color: Colors.primary, fontWeight: FontWeight.semibold },
+  restoreBtn: { alignItems: 'center', paddingVertical: Spacing.sm },
+  restoreText: { textDecorationLine: 'underline' },
 });
