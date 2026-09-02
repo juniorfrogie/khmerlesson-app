@@ -10,6 +10,7 @@ import { Colors, Spacing, Radius, FontSize, FontWeight } from '@/src/shared/them
 import { Text } from '@/src/shared/components/Text';
 import { useAuthStore } from '@/src/features/auth/store/authStore';
 import { syncSubscription } from '@/src/features/subscriptions/service';
+import { fetchAndMergeCloudProgress } from '@/src/features/progress/service';
 import { signInWithApple, signInWithGoogle } from '@/src/features/auth/service';
 import { Linking } from 'react-native';
 import { Image } from 'expo-image';
@@ -30,12 +31,25 @@ export default function LoginScreen() {
   const { setGuest, setAuth } = useAuthStore();
   const [loadingProvider, setLoadingProvider] = useState<'google' | 'apple' | null>(null);
 
-  const prefetchSubscription = async (accessToken: string) => {
-    try {
-      await syncSubscription(accessToken);
-    } catch {
-      // non-critical — home screen will still render correctly via useCourses hasAccess
-    }
+  // Bug fixed: a fresh login only ever synced the subscription — cloud quiz
+  // scores/lesson completions were never pulled down here at all, only on a
+  // later cold-start restore (app/index.tsx) or by opening a quiz/lesson
+  // screen directly. A user who reinstalls and logs back in landed on the
+  // tabs with locally-empty progress stores until one of those happened to
+  // fire, which looked exactly like "my progress is gone" even though the
+  // server still had it. Run both in parallel (not sequential) so this
+  // doesn't add up the two calls' latency on top of each other.
+  const prefetchAccountData = async (accessToken: string) => {
+    await Promise.allSettled([
+      syncSubscription(accessToken),
+      fetchAndMergeCloudProgress(accessToken),
+    ]);
+    // Both syncSubscription and fetchAndMergeCloudProgress already record
+    // their own failures internally (subscriptionStore status: 'error',
+    // progress_fetch_failed log) — non-critical here either way, matching
+    // the previous behavior: a sync/fetch failure must never block login,
+    // since every screen that reads this data already handles it not being
+    // there yet.
   };
   const [error, setError] = useState<string | null>(null);
 
@@ -58,7 +72,7 @@ export default function LoginScreen() {
         return;
       }
       signInWithGoogle(accessToken)
-        .then(({ user, tokens }) => setAuth(user, tokens).then(() => prefetchSubscription(tokens.accessToken)))
+        .then(({ user, tokens }) => setAuth(user, tokens).then(() => prefetchAccountData(tokens.accessToken)))
         .then(() => router.replace('/(tabs)'))
         .catch((e: unknown) => {
           const msg = (e as { message?: string }).message;
@@ -85,7 +99,7 @@ export default function LoginScreen() {
     try {
       const { user, tokens } = await signInWithApple();
       await setAuth(user, tokens);
-      await prefetchSubscription(tokens.accessToken);
+      await prefetchAccountData(tokens.accessToken);
       router.replace('/(tabs)');
     } catch (e: unknown) {
       const err = e as { code?: string | number; message?: string };

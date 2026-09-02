@@ -1000,3 +1000,19 @@ None of the above blocked any of this session's work — everything that could b
 - New test: `src/features/subscriptions/__tests__/service.test.ts` — 3 cases (signs out on `TOKEN_EXPIRED`, signs out on `TOKEN_REVOKED`, does NOT sign out and preserves stale data on a plain network error — the existing behavior this fix must not regress).
 
 **Verified**: `tsc --noEmit` clean (both repos), `expo lint` 0 errors (same pre-existing warning baseline), mobile Jest 34/34 (31 + 3 new), backend `npm test` 8/8.
+
+---
+
+## Bug Fix: Fresh Login Never Fetched Cloud Progress (2026-09-01)
+
+Found via live on-device testing (Voneat's iPhone, physical device, connected to production `https://khmerlessons.app`) after the `main` merge above — the cloud-progress migration (`quiz_attempts`/`lesson_completions`) turned out to already be live in production (confirmed by testing, not assumed — a completed quiz round-tripped through `POST /api/v1/quiz-progress` → `GET /api/v1/progress` successfully on a cold-start restore). But a **delete + reinstall + fresh login** test showed progress still came back empty ("quizzes reset to new"), which led to finding a second, real bug.
+
+**Root cause**: `app/auth/login.tsx`'s post-login flow (`prefetchSubscription`) only ever called `syncSubscription()` — it never called `fetchAndMergeCloudProgress()`. That function is only wired into cold-start session restore (`app/index.tsx`) and the quiz/lesson screens themselves. So a user who reinstalls and logs back in (a *fresh* login, not a session restore — there's nothing to restore yet) landed on the tabs with locally-empty progress stores, looking exactly like data loss, even though the server had it the whole time.
+
+**Fix**: `app/auth/login.tsx` — renamed `prefetchSubscription` to `prefetchAccountData`, now running `syncSubscription` and `fetchAndMergeCloudProgress` in parallel via `Promise.allSettled` (not sequential, so this doesn't stack the two calls' latency) on both the Google and Apple sign-in success paths. Both functions already record their own failures internally and neither one blocking login was already the existing behavior — unchanged.
+
+**Verified live, twice** — delete app → reinstall → log in → immediately (no relaunch needed) saw `progress_fetch_started` → `progress_fetched {"lessonCompletions": 2, "quizAttempts": 1}` in the Metro log, correctly restoring everything synced up to that point across multiple prior reinstalls. Before the fix, the identical test showed login completing with no `progress_fetch_started` at all.
+
+**Also confirms**: the `0004_cloud_progress.sql` migration is live on production — this was itself an open question (tracker previously noted it as blocked, no DB access to verify) resolved by this same testing session, most likely because merging to `main` triggered a DigitalOcean redeploy that runs migrations on start.
+
+`tsc --noEmit` clean, `expo lint` 0 errors, Jest 34/34 (no test changes needed — this is a call-site wiring fix, not new logic; the underlying `fetchAndMergeCloudProgress`/`syncSubscription` functions are already covered).
