@@ -1,7 +1,8 @@
-import { View, StyleSheet, TouchableOpacity, ScrollView, Alert, Linking } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ScrollView, Alert, Linking, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useEffect } from 'react';
+import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, Radius, FontSize } from '@/src/shared/theme';
 import { Text } from '@/src/shared/components/Text';
@@ -14,6 +15,21 @@ const SUPPORT_EMAIL = 'info@khmerlessons.com';
 const PRIVACY_URL = `${process.env.EXPO_PUBLIC_API_BASE_URL}/privacy-policy`;
 // Apple's standard EULA — no custom terms of use defined for this app.
 const TERMS_URL = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
+
+// Shown at the bottom of this screen so a user can read off exactly what
+// build they're on when reporting a bug — matches app.json's `version` plus
+// the platform build identifier (iOS buildNumber / Android versionCode).
+// Reads from Constants.expoConfig rather than expo-application (not a
+// dependency here) since this app has OTA updates disabled
+// (expo.modules.updates.ENABLED: false), so the config baked into the JS
+// bundle always matches the installed native binary — no drift to worry about.
+const APP_VERSION_LABEL = (() => {
+  const version = Constants.expoConfig?.version ?? '?';
+  const build = Platform.OS === 'ios'
+    ? Constants.expoConfig?.ios?.buildNumber
+    : Constants.expoConfig?.android?.versionCode;
+  return build ? `v${version} (${build})` : `v${version}`;
+})();
 
 export default function MeScreen() {
   const router = useRouter();
@@ -209,6 +225,10 @@ export default function MeScreen() {
           </View>
         </View>
 
+        <Text variant="caption" color={Colors.text.muted} style={styles.version}>
+          {APP_VERSION_LABEL}
+        </Text>
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -317,5 +337,9 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: Colors.borderLight,
     marginLeft: Spacing.md + 20 + Spacing.md,
+  },
+  version: {
+    textAlign: 'center',
+    marginTop: Spacing.lg,
   },
 });

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { AppState, AppStateStatus } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 import { Colors } from '@/src/shared/theme';
@@ -40,6 +40,28 @@ if (globalWithErrorUtils.ErrorUtils) {
 }
 
 export default function RootLayout() {
+  const router = useRouter();
+
+  // A dead session (e.g. syncSubscription's own signOut() when a token
+  // fails definitively — see src/features/subscriptions/service.ts) used to
+  // only redirect to login once the user happened to land on a screen that
+  // separately checked isAuthenticated (me.tsx) or a forbiddenReason
+  // (course/lesson screens). Neither Home, Explore, nor the Quiz tab has
+  // such a check, so a sign-out that fired while the user was on one of
+  // those left them stuck on a screen with cleared auth state instead of
+  // being routed to login. Subscribing here catches every transition from
+  // authenticated to fully signed-out, regardless of which screen is
+  // active. Only fires on an actual transition (prevState really was
+  // authenticated) — not on the initial default state at boot, before
+  // app/index.tsx's own hydrate()-then-route logic has run.
+  useEffect(() => {
+    return useAuthStore.subscribe((state, prevState) => {
+      if (prevState.isAuthenticated && !state.isAuthenticated && !state.isGuest) {
+        router.replace('/auth/login');
+      }
+    });
+  }, [router]);
+
   useEffect(() => {
     startLogFlushing();
 
